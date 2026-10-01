@@ -1,5 +1,5 @@
 // App.jsx
-import { useEffect } from 'react';
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Layout from './components/layout/Layout';
@@ -8,30 +8,26 @@ import { AuthProvider, PAGE_KEYS } from './context/AuthContext';
 
 // Pages
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import PurchaseCar from './pages/PurchaseCar';
-import VehicleOnEmi from './pages/VehicleOnEmi';
-import Challans from './pages/Challans';
-import Fastag from './pages/Fastag';
-import Insurance from './pages/Insurance';
-import CarRepair from './pages/CarRepair';
-import AccidentClaims from './pages/AccidentClaims';
-import VendorOffers from './pages/VendorOffers';
-import Approvals from './pages/Approvals';
-import DeliveryPlanning from './pages/DeliveryPlanning';
-import DeliveryOfCar from './pages/DeliveryOfCar';
-import Payment from './pages/Payment';
-import UserManagement from './pages/UserManagement';
-
-import { initLiveSyncService } from './store/dataStore';
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const PurchaseCar = lazy(() => import('./pages/PurchaseCar'));
+const VehicleOnEmi = lazy(() => import('./pages/VehicleOnEmi'));
+const Challans = lazy(() => import('./pages/Challans'));
+const Fastag = lazy(() => import('./pages/Fastag'));
+const Insurance = lazy(() => import('./pages/Insurance'));
+const CarRepair = lazy(() => import('./pages/CarRepair'));
+const AccidentClaims = lazy(() => import('./pages/AccidentClaims'));
+const VendorOffers = lazy(() => import('./pages/VendorOffers'));
+const Approvals = lazy(() => import('./pages/Approvals'));
+const DeliveryPlanning = lazy(() => import('./pages/DeliveryPlanning'));
+const DeliveryOfCar = lazy(() => import('./pages/DeliveryOfCar'));
+const Payment = lazy(() => import('./pages/Payment'));
+const UserManagement = lazy(() => import('./pages/UserManagement'));
+const DailyTrips = lazy(() => import('./pages/DailyTrips'));
+const FuelEntries = lazy(() => import('./pages/FuelEntries'));
+const VehicleReports = lazy(() => import('./pages/VehicleReports'));
+const FlowChart = lazy(() => import('./pages/FlowChart'));
 
 function AppRoutes() {
-  useEffect(() => {
-    // Start real-time 2-way background synchronization with Google Sheets
-    const cleanup = initLiveSyncService(6000);
-    return cleanup;
-  }, []);
-
   return (
     <Routes>
       {/* Public Login Route */}
@@ -233,6 +229,48 @@ function AppRoutes() {
         }
       />
 
+      <Route
+        path="/trips"
+        element={
+          <ProtectedRoute pageKey={PAGE_KEYS.TRIPS}>
+            <Layout>
+              <DailyTrips />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/fuel"
+        element={
+          <ProtectedRoute pageKey={PAGE_KEYS.FUEL}>
+            <Layout>
+              <FuelEntries />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/reports"
+        element={
+          <ProtectedRoute pageKey={PAGE_KEYS.REPORTS}>
+            <Layout>
+              <VehicleReports />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/flow"
+        element={
+          <ProtectedRoute pageKey={PAGE_KEYS.DASHBOARD}>
+            <Layout>
+              <FlowChart />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+
       {/* Admin Only Route */}
       <Route
         path="/users"
@@ -278,7 +316,9 @@ export default function App() {
             },
           }}
         />
-        <AppRoutes />
+        <Suspense fallback={null}>
+          <AppRoutes />
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   );

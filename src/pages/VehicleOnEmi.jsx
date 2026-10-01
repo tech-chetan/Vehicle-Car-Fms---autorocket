@@ -7,7 +7,7 @@ import {
   CheckCircle2, TrendingUp, Filter, X, Shield, ArrowUpRight
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { getCars, updateCar, onStoreUpdate, checkHasEmi, syncAllFromSheets } from '../store/dataStore';
+import { getCars, updateCar, onStoreUpdate, checkHasEmi } from '../store/dataStore';
 import { formatDate, today, calcEmiDetails } from '../utils/dateUtils';
 import { useAuth, PAGE_KEYS } from '../context/AuthContext';
 import { ITEMS_PER_PAGE } from '../constants';
@@ -802,10 +802,9 @@ const VehicleOnEmi = () => {
             className="btn btn-outline"
             onClick={() => {
               loadData();
-              syncAllFromSheets(true);
-              toast.success('Refreshing EMI data from Google Sheets...');
+              toast.success('EMI data refreshed');
             }}
-            title="Sync with Google Sheets"
+            title="Refresh data"
           >
             <RefreshCw size={14} /> Refresh
           </button>

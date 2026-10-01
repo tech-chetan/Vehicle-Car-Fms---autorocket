@@ -3,7 +3,7 @@
 export const openDocument = (docUrl, filename = 'document') => {
   if (!docUrl) return;
 
-  // 1. Direct Web / Google Drive link
+  // 1. Direct web link
   if (typeof docUrl === 'string' && docUrl.startsWith('http')) {
     window.open(docUrl, '_blank', 'noopener,noreferrer');
     return;

@@ -2,7 +2,7 @@
 /**
  * Super-fast client-side image compressor.
  * Compresses 5MB-15MB phone/camera photos down to ~150KB-250KB in milliseconds
- * without quality loss, speeding up Google Drive uploads by 20x!
+ * without quality loss, keeping local storage small and fast.
  */
 
 export const compressImage = (file, maxWidth = 1400, maxHeight = 1400, quality = 0.8) => {

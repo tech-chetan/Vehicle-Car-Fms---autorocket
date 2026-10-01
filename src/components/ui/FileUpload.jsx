@@ -1,7 +1,6 @@
 // components/ui/FileUpload.jsx
-import { Upload, File, X, Eye, CheckCircle2, HardDrive, Loader2, Sparkles } from 'lucide-react';
+import { Upload, File, X, Eye, Loader2, Sparkles } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { uploadFileToDrive } from '../../api/googleSheetsClient';
 import { compressImage } from '../../utils/imageCompressor';
 
 const FileUpload = ({ value, onChange, accept = '*', label = 'Upload File', id }) => {
@@ -26,18 +25,6 @@ const FileUpload = ({ value, onChange, accept = '*', label = 'Upload File', id }
       };
 
       onChange(initialFileObj);
-
-      // 2. Upload lightweight file to Google Drive folder
-      const driveUrl = await uploadFileToDrive(dataUrl, file.name, type || file.type);
-      if (driveUrl) {
-        onChange({
-          name: file.name,
-          url: driveUrl,
-          type: type || file.type,
-          size: size || file.size,
-          isDrive: true,
-        });
-      }
     } catch (err) {
       console.warn('Upload error:', err);
     } finally {
@@ -53,7 +40,6 @@ const FileUpload = ({ value, onChange, accept = '*', label = 'Upload File', id }
   };
 
   const fileObj = typeof value === 'string' && value.trim() ? { url: value.trim(), name: 'Uploaded Document' } : value;
-  const isDriveLink = fileObj?.url && typeof fileObj.url === 'string' && fileObj.url.includes('drive.google.com');
 
   return (
     <div>
@@ -85,11 +71,7 @@ const FileUpload = ({ value, onChange, accept = '*', label = 'Upload File', id }
             <div style={{ fontSize: 11.5, color: '#059669', display: 'flex', alignItems: 'center', gap: 5, marginTop: 2, fontWeight: 600 }}>
               {uploading ? (
                 <span style={{ color: '#d97706', display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Loader2 size={12} className="animate-spin" /> Auto-optimizing & uploading to Drive...
-                </span>
-              ) : isDriveLink ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#059669' }}>
-                  <HardDrive size={12} /> Saved in Google Drive (Fast)
+                  <Loader2 size={12} className="animate-spin" /> Optimizing file...
                 </span>
               ) : (
                 <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -137,7 +119,7 @@ const FileUpload = ({ value, onChange, accept = '*', label = 'Upload File', id }
         >
           <Upload size={22} style={{ color: '#059669', marginBottom: 8 }} />
           <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a', marginBottom: 2 }}>{label}</div>
-          <div style={{ fontSize: 12, color: '#64748b' }}>Fast upload (Auto-compressed & saved in Drive)</div>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Fast upload (Auto-compressed & saved locally)</div>
         </div>
       )}
       <input

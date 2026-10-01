@@ -7,7 +7,7 @@ import {
 import toast from 'react-hot-toast';
 import {
   getVendorOffers, getRepairs, approveVendorOffer, rejectVendorOffer,
-  syncAllFromSheets, onStoreUpdate
+  onStoreUpdate
 } from '../store/dataStore';
 import { formatDate } from '../utils/dateUtils';
 import { openDocument } from '../utils/fileUtils';
@@ -45,7 +45,7 @@ const ApprovalFormModal = ({ offer, onClose, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={submitting} message="Submitting Approval to Google Sheets..." />
+      <LoadingOverlay isVisible={submitting} message="Submitting Approval..." />
 
       {/* Header Info Box */}
       <div style={{
@@ -125,7 +125,7 @@ const ApprovalFormModal = ({ offer, onClose, onSaved }) => {
               className="btn btn-outline btn-xs"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 700 }}
             >
-              <Eye size={13} /> View Quotation Document (Drive)
+              <Eye size={13} /> View Quotation Document
             </button>
           </div>
         )}
@@ -276,7 +276,6 @@ const Approvals = () => {
     });
     setOffers(enrichedOffers);
     setLoading(false);
-    syncAllFromSheets(true);
   }, []);
 
   useEffect(() => {

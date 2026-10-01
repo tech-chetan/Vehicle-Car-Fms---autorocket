@@ -2,11 +2,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Store, Search, Eye, CheckCircle, X, XCircle, Clock, CheckCircle2, AlertCircle, FileText, Wrench, Plus, HardDrive, Shield, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { getVendorOffers, getRepairs, addVendorOffer, updateRepair, approveVendorOffer, rejectVendorOffer, getMasterRepairTypes, syncAllFromSheets, onStoreUpdate } from '../store/dataStore';
+import { getVendorOffers, getRepairs, addVendorOffer, updateRepair, approveVendorOffer, rejectVendorOffer, getMasterRepairTypes, onStoreUpdate } from '../store/dataStore';
 import { generateId } from '../utils/idGenerator';
 import { formatDate, today, createTimestamp } from '../utils/dateUtils';
 import { openDocument } from '../utils/fileUtils';
-import { uploadFileToDrive } from '../api/googleSheetsClient';
 import { ITEMS_PER_PAGE } from '../constants';
 import { useAuth, PAGE_KEYS } from '../context/AuthContext';
 import ReadOnlyNotice from '../components/shared/ReadOnlyNotice';
@@ -54,11 +53,11 @@ const CreateOfferModal = ({ repair, repairTypes, onClose, onSaved }) => {
     try {
       let offerPhotoUrl = form.photoOfOffer;
 
-      // Ensure file upload to Google Drive
+      // Store the file locally
       if (offerPhotoUrl?.url && offerPhotoUrl.url.startsWith('data:')) {
-        const driveUrl = await uploadFileToDrive(offerPhotoUrl.url, `${repair.repairNo}_VendorOffer`, offerPhotoUrl.type);
-        if (driveUrl) {
-          offerPhotoUrl = driveUrl;
+        const fileUrl = offerPhotoUrl.url;
+        if (fileUrl) {
+          offerPhotoUrl = fileUrl;
         }
       } else if (typeof offerPhotoUrl === 'object' && offerPhotoUrl?.url) {
         offerPhotoUrl = offerPhotoUrl.url;
@@ -95,7 +94,7 @@ const CreateOfferModal = ({ repair, repairTypes, onClose, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={saving} message="Submitting Vendor Offer to Google Sheets & Drive..." />
+      <LoadingOverlay isVisible={saving} message="Submitting Vendor Offer..." />
 
       {/* Repair Info Card */}
       <div style={{
@@ -177,14 +176,14 @@ const CreateOfferModal = ({ repair, repairTypes, onClose, onSaved }) => {
           </select>
         </div>
 
-        {/* 3. Types Of Repair (Dynamic from Master Sheet Column B) */}
+        {/* 3. Types Of Repair (from Master List) */}
         <div className="form-group">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <label className="form-label" style={{ marginBottom: 0 }}>
               Types Of Repair <span className="required">*</span>
             </label>
             <span style={{ fontSize: 11.5, color: '#059669', fontWeight: 700 }}>
-              ✓ Loaded from Master Sheet (Col B)
+              ✓ Loaded from Master List
             </span>
           </div>
 
@@ -292,7 +291,6 @@ const VendorOffers = () => {
     setOffers(enrichedOffers);
     setMasterTypes(types);
     setLoading(false);
-    syncAllFromSheets(true);
   }, []);
 
   useEffect(() => {

@@ -1,5 +1,5 @@
 // components/layout/Layout.jsx
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import Sidebar from './Sidebar';
 import Header from './Header';
 
@@ -22,7 +22,9 @@ const Layout = ({ children }) => {
           onToggleSidebar={() => setCollapsed(!collapsed)}
         />
         <main className="page-content">
-          {children}
+          <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Loading...</div>}>
+            {children}
+          </Suspense>
         </main>
       </div>
     </div>

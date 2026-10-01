@@ -19,7 +19,6 @@ import EmptyState from '../components/ui/EmptyState';
 import FileUpload from '../components/ui/FileUpload';
 import SpeedingCarLoader from '../components/ui/SpeedingCarLoader';
 import { openDocument } from '../utils/fileUtils';
-import { uploadFileToDrive } from '../api/googleSheetsClient';
 import { isStage1Completed, isStage2Completed, isStage3Completed, getClaimCurrentStage } from '../utils/claimWorkflow';
 
 const EMPTY_CLAIM = {
@@ -113,8 +112,8 @@ const ClaimForm = ({ claim, claims, repairs, onClose, onSaved, preselectedRepair
         let docVal = processedForm[df.key];
         if (docVal && typeof docVal === 'object' && docVal.url) {
           if (typeof docVal.url === 'string' && docVal.url.startsWith('data:')) {
-            const driveUrl = await uploadFileToDrive(docVal.url, df.name, docVal.type);
-            processedForm[df.key] = driveUrl || docVal.url;
+            const fileUrl = docVal.url;
+            processedForm[df.key] = fileUrl || docVal.url;
           } else {
             processedForm[df.key] = docVal.url;
           }
@@ -137,7 +136,7 @@ const ClaimForm = ({ claim, claims, repairs, onClose, onSaved, preselectedRepair
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={saving} message={isEdit ? "Updating Claim in Google Sheet..." : "Registering Claim in Google Sheet..."} />
+      <LoadingOverlay isVisible={saving} message={isEdit ? "Updating Claim..." : "Registering Claim..."} />
       {isEdit && (
         <div style={{ padding: '10px 16px', background: '#ffedd5', borderRadius: 12, border: '1px solid #fed7aa', marginBottom: 20, fontSize: 13.5, color: '#c2410c', fontWeight: 700 }}>
           📋 Claim No: <span style={{ color: '#0f172a' }}>{claim.claimNo}</span>
@@ -463,8 +462,8 @@ const ClaimProcessForm = ({ claim, targetStage, onClose, onSaved }) => {
         let docVal = processedForm[df.key];
         if (docVal && typeof docVal === 'object' && docVal.url) {
           if (typeof docVal.url === 'string' && docVal.url.startsWith('data:')) {
-            const driveUrl = await uploadFileToDrive(docVal.url, df.name, docVal.type);
-            processedForm[df.key] = driveUrl || docVal.url;
+            const fileUrl = docVal.url;
+            processedForm[df.key] = fileUrl || docVal.url;
           } else {
             processedForm[df.key] = docVal.url;
           }
@@ -516,7 +515,7 @@ const ClaimProcessForm = ({ claim, targetStage, onClose, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={saving} message="Updating Claim Workflow to Google Sheets..." />
+      <LoadingOverlay isVisible={saving} message="Updating Claim Workflow..." />
 
       {/* Workflow Stepper in Modal */}
       <div style={{

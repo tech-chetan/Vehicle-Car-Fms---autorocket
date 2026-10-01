@@ -7,7 +7,7 @@ import {
 import toast from 'react-hot-toast';
 import {
   getRepairs, getVendorOffers, getDeliveries,
-  submitDelivery, syncAllFromSheets, onStoreUpdate
+  submitDelivery, onStoreUpdate
 } from '../store/dataStore';
 import { formatDate, today } from '../utils/dateUtils';
 import { ITEMS_PER_PAGE } from '../constants';
@@ -20,7 +20,6 @@ import EmptyState from '../components/ui/EmptyState';
 import FileUpload from '../components/ui/FileUpload';
 import LoadingOverlay from '../components/ui/LoadingOverlay';
 import SpeedingCarLoader from '../components/ui/SpeedingCarLoader';
-import { uploadFileToDrive } from '../api/googleSheetsClient';
 
 // ─── Record Delivery Modal ───────────────────────────────────────────────────
 const RecordDeliveryModal = ({ repair, onClose, onSaved }) => {
@@ -51,8 +50,8 @@ const RecordDeliveryModal = ({ repair, onClose, onSaved }) => {
     try {
       let billDocUrl = form.billImage;
       if (billDocUrl?.url && billDocUrl.url.startsWith('data:')) {
-        const driveUrl = await uploadFileToDrive(billDocUrl.url, `${repair.repairNo}_DeliveryBill`, billDocUrl.type);
-        if (driveUrl) billDocUrl = driveUrl;
+        const fileUrl = billDocUrl.url;
+        if (fileUrl) billDocUrl = fileUrl;
       } else if (typeof billDocUrl === 'object' && billDocUrl?.url) {
         billDocUrl = billDocUrl.url;
       }
@@ -75,7 +74,7 @@ const RecordDeliveryModal = ({ repair, onClose, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={submitting} message="Submitting Delivery to Google Sheets..." />
+      <LoadingOverlay isVisible={submitting} message="Submitting Delivery..." />
 
       {/* Reference Card */}
       <div style={{
@@ -299,7 +298,7 @@ const ViewDeliveryModal = ({ delivery, onClose }) => {
             className="btn btn-outline btn-sm"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
           >
-            <Eye size={14} /> Open Garage Bill (Drive)
+            <Eye size={14} /> Open Garage Bill
           </a>
         </div>
       )}
@@ -336,7 +335,6 @@ const DeliveryOfCar = () => {
     setVendorOffers(v);
     setDeliveries(d);
     if (isInitial) setInitialLoading(false);
-    syncAllFromSheets(true);
   }, []);
 
   useEffect(() => {

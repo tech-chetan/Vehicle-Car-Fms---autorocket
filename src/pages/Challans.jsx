@@ -7,7 +7,6 @@ import {
 import toast from 'react-hot-toast';
 import { getCars, getChallans, addChallan, updateChallan, deleteChallan, onStoreUpdate } from '../store/dataStore';
 import { formatDate, today } from '../utils/dateUtils';
-import { uploadFileToDrive } from '../api/googleSheetsClient';
 import { useAuth, PAGE_KEYS } from '../context/AuthContext';
 import { ITEMS_PER_PAGE } from '../constants';
 import Modal from '../components/ui/Modal';
@@ -197,14 +196,10 @@ const Challans = () => {
     try {
       let finalDocUrl = formData.documentUrl;
 
-      // Handle Drive file upload if local blob/data
+      // Store the file locally
       if (formData.documentUrl?.url && formData.documentUrl.url.startsWith('data:')) {
-        const driveUrl = await uploadFileToDrive(
-          formData.documentUrl.url,
-          `${formModalCar.registrationNo || 'vehicle'}_Challan_${formData.challanNo || Date.now()}`,
-          formData.documentUrl.type
-        );
-        if (driveUrl) finalDocUrl = driveUrl;
+        const fileUrl = formData.documentUrl.url;
+        if (fileUrl) finalDocUrl = fileUrl;
       } else if (typeof formData.documentUrl === 'object' && formData.documentUrl?.url) {
         finalDocUrl = formData.documentUrl.url;
       }

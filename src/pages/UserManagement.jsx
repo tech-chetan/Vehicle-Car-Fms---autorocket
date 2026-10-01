@@ -1,7 +1,7 @@
 // pages/UserManagement.jsx
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useAuth, PAGE_CONFIG, ACCESS_LEVELS } from '../context/AuthContext';
-import { syncAllFromSheets } from '../store/dataStore';
+import { resetDemoData } from '../store/dataStore';
 import {
   Users, UserPlus, Shield, Key, Edit2, Trash2, CheckCircle2,
   XCircle, Eye, ShieldCheck, Lock, Search, Filter, AlertTriangle, UserCheck,
@@ -34,37 +34,17 @@ const DEPARTMENTS = [
 ];
 
 export default function UserManagement() {
-  const { users, currentUser, addUser, updateUser, deleteUser, syncWithSheetNow } = useAuth();
+  const { users, currentUser, addUser, updateUser, deleteUser } = useAuth();
   
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState(null); // 'add' | 'edit'
   const [selectedUser, setSelectedUser] = useState(null);
   const [form, setForm] = useState({ ...EMPTY_USER });
   const [deleteDialog, setDeleteDialog] = useState(null);
-  const [syncingSheet, setSyncingSheet] = useState(false);
-
-  useEffect(() => {
-    syncWithSheetNow().catch(() => {});
-    syncAllFromSheets(true).catch(() => {});
-  }, []);
-
-  const handleSyncSheet = async () => {
-    setSyncingSheet(true);
-    try {
-      const [res] = await Promise.all([
-        syncWithSheetNow(),
-        syncAllFromSheets(true)
-      ]);
-      if (res && res.length > 0) {
-        toast.success(`Successfully synced ${res.length} user(s) from Google Sheet!`);
-      } else {
-        toast.error('Could not fetch from sheet or "Login Page" is empty.');
-      }
-    } catch (err) {
-      toast.error('Sync failed: ' + err.message);
-    } finally {
-      setSyncingSheet(false);
-    }
+  const handleResetDemoData = () => {
+    if (!window.confirm('Reset all vehicle records to the demo (dummy) data? Users are not affected.')) return;
+    resetDemoData();
+    toast.success('Demo data restored!');
   };
 
   const openAddModal = () => {
@@ -197,13 +177,12 @@ export default function UserManagement() {
         <div style={{ display: 'flex', gap: 10 }}>
           <button
             className="btn btn-outline"
-            onClick={handleSyncSheet}
-            disabled={syncingSheet}
-            title="Refresh & sync with Google Sheet"
+            onClick={handleResetDemoData}
+            title="Restore the dummy demo data"
             style={{ display: 'flex', alignItems: 'center', gap: 6 }}
           >
-            <RefreshCw size={15} className={syncingSheet ? 'animate-spin' : ''} />
-            <span>{syncingSheet ? 'Syncing...' : 'Refresh / Sync'}</span>
+            <RefreshCw size={15} />
+            <span>Reset Demo Data</span>
           </button>
           <button className="btn btn-primary" onClick={openAddModal}>
             <UserPlus size={16} strokeWidth={2.5} />
@@ -445,7 +424,7 @@ export default function UserManagement() {
                           </button>
                           
                           {/* Protect Super Admin & Current User from accidental delete */}
-                          {user.email !== 'admin@passary.com' && !isMe && (
+                          {user.email !== 'admin@vehicleapp.com' && !isMe && (
                             <button
                               className="btn btn-ghost btn-xs"
                               title="Delete User"
@@ -493,7 +472,7 @@ export default function UserManagement() {
                 <input
                   type="email"
                   className="form-input"
-                  placeholder="ramesh@passary.com"
+                  placeholder="ramesh@vehicleapp.com"
                   value={form.email}
                   onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                   required

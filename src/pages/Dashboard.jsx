@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import {
   getCars, getInsurance, getRepairs, getClaims,
-  getVendorOffers, getDeliveries, getPayments, syncAllFromSheets, onStoreUpdate, checkHasEmi
+  getVendorOffers, getDeliveries, getPayments, onStoreUpdate, checkHasEmi
 } from '../store/dataStore';
 import { daysUntil, formatDate, calcEmiDetails } from '../utils/dateUtils';
 import Badge from '../components/ui/Badge';
@@ -60,7 +60,6 @@ const Dashboard = () => {
     ]);
     setData({ cars, insurance, repairs, claims, vendorOffers, deliveries, payments });
     if (isInitial) setLoading(false);
-    syncAllFromSheets(true);
   };
 
   useEffect(() => {

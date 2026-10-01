@@ -1,9 +1,8 @@
 // context/AuthContext.jsx
-import { createContext, useContext, useState, useEffect } from 'react';
-import { addUserToSheet, updateUserInSheet, deleteUserFromSheet, pushUsersToSheet, syncUsersFromSheet } from '../store/dataStore';
+import { createContext, useContext, useState } from 'react';
 
-const AUTH_STORAGE_KEY = 'cms_current_user';
-const USERS_STORAGE_KEY = 'cms_users';
+const AUTH_STORAGE_KEY = 'vehicle_app_current_user';
+const USERS_STORAGE_KEY = 'vehicle_app_users';
 
 export const PAGE_KEYS = {
   DASHBOARD: 'dashboard',
@@ -18,6 +17,9 @@ export const PAGE_KEYS = {
   APPROVALS: 'approvals',
   DELIVERY: 'delivery',
   PAYMENT: 'payment',
+  TRIPS: 'trips',
+  FUEL: 'fuel',
+  REPORTS: 'reports',
 };
 
 export const PAGE_CONFIG = [
@@ -33,6 +35,9 @@ export const PAGE_CONFIG = [
   { key: PAGE_KEYS.APPROVALS, label: 'Approvals', path: '/approvals', defaultLevel: 'full' },
   { key: PAGE_KEYS.DELIVERY, label: 'Delivery Of Car', path: '/delivery', defaultLevel: 'full' },
   { key: PAGE_KEYS.PAYMENT, label: 'Payment', path: '/payment', defaultLevel: 'full' },
+  { key: PAGE_KEYS.TRIPS, label: 'Daily Trips', path: '/trips', defaultLevel: 'full' },
+  { key: PAGE_KEYS.FUEL, label: 'Fuel Management', path: '/fuel', defaultLevel: 'full' },
+  { key: PAGE_KEYS.REPORTS, label: 'Vehicle Reports', path: '/reports', defaultLevel: 'full' },
 ];
 
 export const ACCESS_LEVELS = {
@@ -45,7 +50,7 @@ const DEFAULT_USERS = [
   {
     id: 'user_admin',
     name: 'Super Admin',
-    email: 'admin@passary.com',
+    email: 'admin@vehicleapp.com',
     password: 'admin123',
     role: 'admin',
     department: 'Management',
@@ -56,7 +61,7 @@ const DEFAULT_USERS = [
   {
     id: 'user_manager',
     name: 'Operations Manager',
-    email: 'manager@passary.com',
+    email: 'manager@vehicleapp.com',
     password: 'manager123',
     role: 'user',
     department: 'Operations',
@@ -74,13 +79,16 @@ const DEFAULT_USERS = [
       [PAGE_KEYS.APPROVALS]: ACCESS_LEVELS.NONE,
       [PAGE_KEYS.DELIVERY]: ACCESS_LEVELS.FULL,
       [PAGE_KEYS.PAYMENT]: ACCESS_LEVELS.NONE,
+      [PAGE_KEYS.TRIPS]: ACCESS_LEVELS.FULL,
+      [PAGE_KEYS.FUEL]: ACCESS_LEVELS.FULL,
+      [PAGE_KEYS.REPORTS]: ACCESS_LEVELS.VIEW,
     },
     createdAt: '2025-01-02T00:00:00.000Z',
   },
   {
     id: 'user_viewer',
     name: 'Audit / Staff Viewer',
-    email: 'viewer@passary.com',
+    email: 'viewer@vehicleapp.com',
     password: 'viewer123',
     role: 'user',
     department: 'Audit & Compliance',
@@ -122,41 +130,6 @@ export const AuthProvider = ({ children }) => {
 
   const [loading, setLoading] = useState(false);
 
-  // Live listener for 2-way Google Sheet sync updates
-  useEffect(() => {
-    const handleSync = () => {
-      try {
-        const stored = localStorage.getItem(USERS_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setUsers(parsed);
-
-            // If current user credentials or permissions changed in sheet, update active session in real-time
-            const activeRaw = localStorage.getItem(AUTH_STORAGE_KEY);
-            if (activeRaw) {
-              const active = JSON.parse(activeRaw);
-              const found = parsed.find(u => u.email.toLowerCase() === active.email.toLowerCase());
-              if (found) {
-                setCurrentUser(found);
-                localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(found));
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('User sync listener error:', err);
-      }
-    };
-
-    window.addEventListener('cms_users_updated', handleSync);
-    window.addEventListener('cms_datastore_updated', handleSync);
-    return () => {
-      window.removeEventListener('cms_users_updated', handleSync);
-      window.removeEventListener('cms_datastore_updated', handleSync);
-    };
-  }, []);
-
   // Sync users to local storage
   const saveUsers = (updatedUsers) => {
     setUsers(updatedUsers);
@@ -174,8 +147,6 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 200));
-
     const cleanEmail = (email || '').trim().toLowerCase();
     const user = users.find(u => u.email.toLowerCase() === cleanEmail);
 
@@ -222,7 +193,7 @@ export const AuthProvider = ({ children }) => {
     return currentUser.permissions?.[pageKey] || ACCESS_LEVELS.FULL;
   };
 
-  // User Management functions (2-way live sync with Google Sheet Login Page tab)
+  // User Management functions (stored locally)
   const addUser = (userData) => {
     const newUser = {
       ...userData,
@@ -232,21 +203,12 @@ export const AuthProvider = ({ children }) => {
     };
     const updated = [...users, newUser];
     saveUsers(updated);
-
-    // 2-Way Sync: send to Google Sheet Login Page
-    addUserToSheet(newUser).catch(err => console.warn('Sheet sync error:', err));
     return newUser;
   };
 
   const updateUser = (userId, updatedData) => {
     const updated = users.map(u => u.id === userId ? { ...u, ...updatedData, updatedAt: new Date().toISOString() } : u);
     saveUsers(updated);
-
-    const updatedTarget = updated.find(u => u.id === userId);
-    if (updatedTarget) {
-      // 2-Way Sync: update in Google Sheet Login Page
-      updateUserInSheet(updatedTarget).catch(err => console.warn('Sheet sync error:', err));
-    }
   };
 
   const deleteUser = (userId) => {
@@ -254,29 +216,15 @@ export const AuthProvider = ({ children }) => {
       throw new Error('You cannot delete your own logged-in account.');
     }
     const target = users.find(u => u.id === userId);
-    if (target?.email === 'admin@passary.com') {
+    if (target?.email === 'admin@vehicleapp.com') {
       throw new Error('Super Admin account cannot be deleted.');
     }
     const updated = users.filter(u => u.id !== userId);
     saveUsers(updated);
-
-    if (target) {
-      // 2-Way Sync: delete from Google Sheet Login Page
-      deleteUserFromSheet(target.email).catch(err => console.warn('Sheet sync error:', err));
-    }
   };
 
   const resetToDefaultUsers = () => {
     saveUsers(DEFAULT_USERS);
-    pushUsersToSheet(DEFAULT_USERS).catch(err => console.warn('Sheet sync error:', err));
-  };
-
-  const syncWithSheetNow = async () => {
-    return await syncUsersFromSheet();
-  };
-
-  const pushUsersToSheetNow = async () => {
-    return await pushUsersToSheet(users);
   };
 
   return (
@@ -294,8 +242,6 @@ export const AuthProvider = ({ children }) => {
         updateUser,
         deleteUser,
         resetToDefaultUsers,
-        syncWithSheetNow,
-        pushUsersToSheetNow,
       }}
     >
       {children}

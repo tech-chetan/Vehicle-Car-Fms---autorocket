@@ -2,6 +2,8 @@
 
 export const FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid', 'LPG'];
 
+export const VEHICLE_TYPES = ['Car', 'SUV', 'MUV', 'Pick-Up', 'Truck', 'Bus', 'Bike', 'Other'];
+
 export const REPAIR_STATUS = {
   CREATED: 'Created',
   OFFER_RECEIVED: 'Offer Received',

@@ -64,10 +64,10 @@ const Header = ({ onMenuToggle, collapsed, onToggleSidebar }) => {
             boxShadow: '0 2px 6px rgba(5, 150, 105, 0.12)',
             overflow: 'hidden', padding: 3
           }}>
-            <img src="/passary-logo.png" alt="Passary Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            <img src="/vehicle-app-logo.svg" alt="Vehicle App Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           </div>
           <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', letterSpacing: -0.2 }}>
-            Passary <span style={{ color: '#059669' }}>Car System</span>
+            Vehicle <span style={{ color: '#059669' }}>App</span>
           </div>
         </div>
 

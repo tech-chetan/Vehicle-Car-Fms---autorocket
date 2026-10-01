@@ -2,12 +2,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   CreditCard, Search, Eye, X, ExternalLink, CheckCircle,
-  Clock, FileText, ArrowUpRight, Copy, Check, Lock
+  Clock, FileText, Copy, Check, Lock
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   getDeliveries, getRepairs, getPayments,
-  updatePaymentStatus, syncAllFromSheets, onStoreUpdate
+  updatePaymentStatus, onStoreUpdate
 } from '../store/dataStore';
 import { formatDate } from '../utils/dateUtils';
 import { ITEMS_PER_PAGE } from '../constants';
@@ -18,31 +18,6 @@ import Modal from '../components/ui/Modal';
 import Pagination from '../components/ui/Pagination';
 import EmptyState from '../components/ui/EmptyState';
 import SpeedingCarLoader from '../components/ui/SpeedingCarLoader';
-
-const GOOGLE_PAYMENT_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLScn8tHEUldlOM_8DKpHUfHHiRImDVjkpkhhfduaZUIxpxlJrA/viewform';
-
-// Exact Google Form field entry mappings:
-// entry.1200639812: Unique no (Repair No)
-// entry.1091308719: Garage Name
-// entry.1486176123: Bill Amount
-const buildGoogleFormUrl = (item) => {
-  try {
-    const url = new URL(GOOGLE_PAYMENT_FORM_URL);
-    url.searchParams.set('usp', 'pp_url');
-    if (item?.repairNo) {
-      url.searchParams.set('entry.1200639812', item.repairNo);
-    }
-    if (item?.garageName && item.garageName !== '—') {
-      url.searchParams.set('entry.1091308719', item.garageName);
-    }
-    if (item?.billAmount) {
-      url.searchParams.set('entry.1486176123', item.billAmount);
-    }
-    return url.toString();
-  } catch {
-    return GOOGLE_PAYMENT_FORM_URL;
-  }
-};
 
 const Payment = () => {
   const [activeTab, setActiveTab] = useState('pending'); // 'pending' | 'history'
@@ -65,7 +40,6 @@ const Payment = () => {
     setRepairs(r);
     setPayments(p);
     if (isInitial) setInitialLoading(false);
-    syncAllFromSheets(true);
   }, []);
 
   useEffect(() => {
@@ -117,24 +91,24 @@ const Payment = () => {
   const totalPages = Math.ceil(currentList.length / ITEMS_PER_PAGE) || 1;
   const pagedList = currentList.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
 
-  const handlePaymentClick = (item) => {
-    const formUrl = buildGoogleFormUrl(item);
-
-    // Copy Repair No to clipboard for convenience
-    if (navigator.clipboard && item.repairNo) {
-      navigator.clipboard.writeText(item.repairNo).catch(() => {});
+  const handlePaymentClick = async (item) => {
+    if (!window.confirm(`Mark payment of ₹${item.billAmount || '0'} to ${item.garageName || 'garage'} for ${item.repairNo} as completed?`)) return;
+    try {
+      await updatePaymentStatus(item.repairNo, 'Payment Completed', {
+        vehicleId: item.vehicleId,
+        vehicleName: item.vehicleName,
+        carName: item.vehicleName,
+        garageName: item.garageName,
+        dateVehicleReceived: item.dateVehicleReceived,
+        kmAtTimeOfRepair: item.kmAtTimeOfRepair,
+        serviceAmount: item.serviceAmount,
+        billAmount: item.billAmount,
+        billImage: item.billImage,
+      });
+      toast.success(`Payment completed for ${item.repairNo}`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to update payment');
     }
-
-    toast.success(
-      <span>
-        Opening Google Payment Form...<br />
-        Unique No: <strong>{item.repairNo}</strong> | Garage: <strong>{item.garageName || '—'}</strong> | Bill: <strong>₹{item.billAmount || '0'}</strong>
-      </span>,
-      { duration: 4500 }
-    );
-
-    // Open Google Form in new tab
-    window.open(formUrl, '_blank');
   };
 
   const { canEditPage } = useAuth();
@@ -148,7 +122,7 @@ const Payment = () => {
       <div className="page-header">
         <div>
           <h1 className="page-title">Payment</h1>
-          <p className="page-subtitle">Disburse payments for delivered vehicles via Google Payment Form</p>
+          <p className="page-subtitle">Disburse and record payments for delivered vehicles</p>
         </div>
       </div>
 
@@ -315,7 +289,7 @@ const Payment = () => {
                               boxShadow: '0 3px 10px rgba(5,150,105,0.3)'
                             }}
                           >
-                            <CreditCard size={15} /> Payment <ArrowUpRight size={14} />
+                            <CreditCard size={15} /> Mark Paid
                           </button>
                         ) : (
                           <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>Payment Restricted</span>

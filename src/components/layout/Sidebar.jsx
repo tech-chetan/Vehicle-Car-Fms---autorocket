@@ -4,12 +4,12 @@ import {
   LayoutDashboard, Car, Shield, Wrench, AlertTriangle,
   Store, CheckCircle, Truck, CreditCard, FileWarning,
   ChevronLeft, ChevronRight, X, Users, Lock, Eye, Clock,
-  ChevronDown
+  ChevronDown, Route, Fuel, BarChart3, GitBranch
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import {
   getRepairs, getVendorOffers, getClaims, getDeliveries,
-  getPayments, getCars, getChallans, getFastags, onStoreUpdate, checkHasEmi
+  getPayments, getCars, getChallans, getFastags, getTrips, getFuelSlips, onStoreUpdate, checkHasEmi
 } from '../../store/dataStore';
 import { isStage1Completed, isStage2Completed, isStage3Completed } from '../../utils/claimWorkflow';
 import { useAuth, PAGE_KEYS, ACCESS_LEVELS } from '../../context/AuthContext';
@@ -19,6 +19,7 @@ const NAV_GROUPS = [
     section: null,
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, pageKey: PAGE_KEYS.DASHBOARD },
+      { to: '/flow', label: 'System Flow', icon: GitBranch, pageKey: PAGE_KEYS.DASHBOARD },
     ],
   },
   {
@@ -28,6 +29,14 @@ const NAV_GROUPS = [
       { to: '/vehicle-emi', label: 'Vehicle on EMI', icon: Clock, badgeKey: 'activeEmis', pageKey: PAGE_KEYS.VEHICLE_EMI },
       { to: '/challans', label: 'Challan', icon: AlertTriangle, badgeKey: 'challans', pageKey: PAGE_KEYS.CHALLANS },
       { to: '/fastags', label: 'Fastag', icon: CreditCard, badgeKey: 'fastag', pageKey: PAGE_KEYS.FASTAG },
+    ],
+  },
+  {
+    section: 'Operations',
+    items: [
+      { to: '/trips', label: 'Daily Trips', icon: Route, badgeKey: 'runningTrips', pageKey: PAGE_KEYS.TRIPS },
+      { to: '/fuel', label: 'Fuel Management', icon: Fuel, badgeKey: 'pendingFuelSlips', pageKey: PAGE_KEYS.FUEL },
+      { to: '/reports', label: 'Vehicle Reports', icon: BarChart3, pageKey: PAGE_KEYS.REPORTS },
     ],
   },
   {
@@ -99,10 +108,11 @@ const Sidebar = ({ collapsed, setCollapsed, mobileOpen, setMobileOpen }) => {
   useEffect(() => {
     const fetchCounts = async () => {
       try {
-        const [repairs, offers, claims, deliveries, payments, cars, challans, fastags] = await Promise.all([
+        const [repairs, offers, claims, deliveries, payments, cars, challans, fastags, trips, fuelSlips] = await Promise.all([
           getRepairs(), getVendorOffers(), getClaims(), getDeliveries(), getPayments(),
-          getCars(), getChallans(), getFastags()
+          getCars(), getChallans(), getFastags(), getTrips(), getFuelSlips()
         ]);
+        const runningTrips = trips.filter(t => t.status === 'In Progress').length;
         const missingFastagCount = cars.filter(c => {
           const hasFt = fastags.some(f => f.vehicleId === c.vehicleId || (c.registrationNo && f.registrationNo === c.registrationNo));
           return !hasFt;
@@ -129,6 +139,8 @@ const Sidebar = ({ collapsed, setCollapsed, mobileOpen, setMobileOpen }) => {
           challans: challans.filter(c => c.paymentStatus === 'Pending').length,
           fastag: missingFastagCount > 0 ? missingFastagCount : undefined,
           activeEmis: activeEmiCount > 0 ? activeEmiCount : undefined,
+          runningTrips: runningTrips > 0 ? runningTrips : undefined,
+          pendingFuelSlips: fuelSlips.filter(s => s.status === 'Pending').length || undefined,
         });
       } catch {
         // silent fallback
@@ -175,13 +187,13 @@ const Sidebar = ({ collapsed, setCollapsed, mobileOpen, setMobileOpen }) => {
               flexShrink: 0, boxShadow: '0 3px 8px rgba(5, 150, 105, 0.12)',
               overflow: 'hidden', padding: 3
             }}>
-              <img src="/passary-logo.png" alt="Passary Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              <img src="/vehicle-app-logo.svg" alt="Vehicle App Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
             </div>
 
             {!collapsed && (
               <div style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap' }}>
                 <div style={{ fontSize: 14.5, fontWeight: 800, color: '#0f172a', lineHeight: 1.2, letterSpacing: -0.2, whiteSpace: 'nowrap' }}>
-                  Passary <span style={{ color: '#059669' }}>Car System</span>
+                  Vehicle <span style={{ color: '#059669' }}>App</span>
                 </div>
               </div>
             )}

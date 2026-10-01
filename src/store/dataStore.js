@@ -1,9 +1,9 @@
 // store/dataStore.js
-// Dual-layer data store: Synchronous local state + background sync to connected Google Sheets API.
+// Local-only data store: all records live in the browser (localStorage) with an in-memory cache.
 
-import { getScriptUrl, fetchFromSheet, sendToSheet } from '../api/googleSheetsClient';
 import { createTimestamp, today } from '../utils/dateUtils';
 import { generateClaimNo, generateId } from '../utils/idGenerator';
+import { buildSeedData, SEED_VERSION, MASTER_FIRM_NAMES, MASTER_REPAIR_TYPES, MASTER_FILLING_LOCATIONS } from './seedData';
 
 const KEYS = {
   CARS: 'cms_cars',
@@ -16,6 +16,9 @@ const KEYS = {
   PAYMENTS: 'cms_payments',
   CHALLANS: 'cms_challans',
   FASTAGS: 'cms_fastags',
+  TRIPS: 'cms_trips',
+  FUELS: 'cms_fuels',
+  FUEL_SLIPS: 'cms_fuel_slips',
   USERS: 'cms_users',
 };
 
@@ -46,230 +49,38 @@ export const onStoreUpdate = (callback) => {
   return () => window.removeEventListener('cms_datastore_updated', callback);
 };
 
+const cache = {};
+
 const load = (key) => {
+  if (cache[key]) return cache[key].map(item => ({ ...item }));
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
+    cache[key] = raw ? JSON.parse(raw) : [];
   } catch {
-    return [];
+    cache[key] = [];
   }
+  return cache[key].map(item => ({ ...item }));
 };
 
 const save = (key, data) => {
-  localStorage.setItem(key, JSON.stringify(data));
+  cache[key] = data;
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (err) {
+    console.warn('Local storage save failed (storage may be full):', err);
+  }
   notifyStoreUpdate();
 };
 
-// ─── MAPPER FOR "Login Page" SHEET ──────────────────────────────────────────
-export const mapUserToSheet = (user) => {
-  const permissions = user.permissions || {};
-
-  const formatLevel = (key) => {
-    if (user.role === 'admin') return 'Full';
-    const level = permissions[key];
-    if (level === 'full') return 'Full';
-    if (level === 'view') return 'View';
-    return 'None';
-  };
-
-  return {
-    "Timestamp": user.createdAt || user.timestamp || createTimestamp(),
-    "Name": user.name || '',
-    "User": user.email || '',
-    "Password": user.password || '',
-    "Role": user.role === 'admin' ? 'Admin' : 'User',
-    "Department": user.department || 'Operations',
-    "Dashboard": formatLevel('dashboard'),
-    "Purchase Car": formatLevel('purchase_car'),
-    "Vehicle on EMI": formatLevel('vehicle_emi'),
-    "Challan": formatLevel('challans'),
-    "Fastag": formatLevel('fastag'),
-    "Insurance": formatLevel('insurance'),
-    "Car Repair": formatLevel('car_repair'),
-    "Accident / Claims": formatLevel('accident_claims'),
-    "Vendor Offers": formatLevel('vendor_offers'),
-    "Approvals": formatLevel('approvals'),
-    "Delivery Of Car": formatLevel('delivery'),
-    "Payment": formatLevel('payment'),
-  };
-};
-
-export const mapSheetRowToUser = (row, index) => {
-  if (!row || typeof row !== 'object') return null;
-
-  const get = (...keys) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
-        return String(row[k]).trim();
-      }
-      const target = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [rk, rv] of Object.entries(row)) {
-        if (rk.toLowerCase().replace(/[^a-z0-9]/g, '') === target && rv !== undefined && rv !== null && String(rv).trim() !== '') {
-          return String(rv).trim();
-        }
-      }
-    }
-    return '';
-  };
-
-  const email = get('User', 'User / Email', 'Email', 'Username', 'user', 'email');
-  const name = get('Name', 'Full Name', 'name') || (email ? email.split('@')[0] : `User ${index + 1}`);
-  const password = get('Password', 'Pass', 'password');
-
-  if (!email && !password) return null;
-  const cleanEmail = email.toLowerCase();
-  if (cleanEmail === 'user' || cleanEmail === 'email' || name.toLowerCase() === 'name' || cleanEmail.includes('timestamp')) {
-    return null;
-  }
-
-  const rawRole = get('Role', 'role').toLowerCase();
-  const isAdmin = rawRole === 'admin' || rawRole === 'super admin' || cleanEmail === 'admin@passary.com';
-  const role = isAdmin ? 'admin' : 'user';
-  const department = get('Department', 'department') || (isAdmin ? 'Management' : 'Operations');
-
-  const permissions = {};
-  const accessibleStepsStr = get('Accessible Steps', 'Allowed Steps', 'Access Steps', 'Steps', 'Access').toLowerCase();
-
-  PAGE_STEPS.forEach(p => {
-    const colVal = get(p.label, p.key, p.label.replace(/\s+/g, '')).toLowerCase();
-
-    if (isAdmin) {
-      permissions[p.key] = 'full';
-    } else if (colVal) {
-      if (['full', 'yes', 'y', '1', 'true', 'write', 'edit', 'all'].includes(colVal)) {
-        permissions[p.key] = 'full';
-      } else if (['view', 'read', 'v'].includes(colVal)) {
-        permissions[p.key] = 'view';
-      } else if (['none', 'no', 'n', '0', 'false'].includes(colVal)) {
-        permissions[p.key] = 'none';
-      } else {
-        permissions[p.key] = 'view';
-      }
-    } else if (accessibleStepsStr) {
-      const stepName = p.label.toLowerCase();
-      const stepKey = p.key.toLowerCase();
-      if (accessibleStepsStr.includes(stepName) || accessibleStepsStr.includes(stepKey)) {
-        permissions[p.key] = 'full';
-      } else {
-        permissions[p.key] = 'none';
-      }
-    } else {
-      permissions[p.key] = 'view';
+// Keep the cache fresh when another browser tab changes the data
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key && cache[e.key]) {
+      delete cache[e.key];
+      notifyStoreUpdate();
     }
   });
-
-  return {
-    id: get('id') || `user_${cleanEmail.replace(/[^a-z0-9]/gi, '_')}`,
-    name,
-    email: email.trim(),
-    password: password || 'pass123',
-    role,
-    department,
-    avatarColor: isAdmin ? '#059669' : '#2563eb',
-    permissions,
-    createdAt: get('Timestamp', 'createdAt') || new Date().toISOString(),
-  };
-};
-
-// ─── MAPPER FOR "Purchase Car Details" SHEET ──────────────────────────────────
-export const mapCarToSheet = (car) => ({
-  "Timestamp": car.timestamp || car.createdAt || createTimestamp(),
-  "Vehicle ID": car.vehicleId || '',
-  "Firm Name": car.firmName || '',
-  "NAME OF CAR / Vehicle": car.carName || '',
-  "DATE OF PURCHASE": car.dateOfPurchase || '',
-  "MODEL NO": car.modelNo || '',
-  "COMPANY PURCHASED FROM": car.companyPurchasedFrom || '',
-  "FUEL TYPE": car.fuelType || '',
-  "REGISTRATION NO.": car.registrationNo || '',
-  "CHASSIS NO.": car.chassisNo || '',
-  "ENGINE NO.": car.engineNo || '',
-  "HYPOTHICATION BANK": car.hypothecationBank || '',
-  "LOAN AMOUNT": car.loanAmount || '',
-  "EMI START DATE": car.emiStartDate || '',
-  "LAST EMI DATE": car.lastEmiDate || '',
-  "DATE OF RELEASE OF HYPOTHICATION": car.dateOfReleaseHypothecation || '',
-  "VALUE OF CAR": car.valueOfCar || '',
-  "EMI AMOUNT": car.emiAmount || '',
-  "TOTAL EMIS": car.totalEmis || '',
-  "PAID EMIS": car.paidEmis || '',
-  "PAID EMI AMOUNT": car.paidEmiAmount || '',
-  "REMAINING LOAN AMOUNT": car.remainingLoanAmount || '',
-  "EMI (Y/N)": car.hasEmi === false ? 'No' : (car.hasEmi === true ? 'Yes' : (checkHasEmi(car) ? 'Yes' : 'No')),
-  "INSURANCE AMOUNT": car.insuranceAmount || '',
-  "RTO AMOUNT": car.rtoAmount || '',
-  "COMPANY MOBILE NO.": car.companyMobileNo || '',
-  "SERVICE PERSON NAME": car.servicePersonName || '',
-  "SERVICE PERSON MOBILE NO": car.servicePersonMobileNo || '',
-  "Copy Of Insurance": car.copyOfInsurance?.url || (typeof car.copyOfInsurance === 'string' ? car.copyOfInsurance : '') || '',
-  "Copy Of Registration": car.copyOfRegistration?.url || (typeof car.copyOfRegistration === 'string' ? car.copyOfRegistration : '') || '',
-  "Name Of The Company": car.nameOfCompany || '',
-  "Name Of The Owner": car.nameOfOwner || '',
-  "Agent Name": car.agentName || '',
-  "Date Of Insurance": car.dateOfInsurance || '',
-  "Pollution Date": car.pollutionDate || '',
-});
-
-export const mapSheetRowToCar = (row, index) => {
-  if (!row || typeof row !== 'object') return null;
-
-  const get = (...keys) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
-        return String(row[k]).trim();
-      }
-      const target = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [rk, rv] of Object.entries(row)) {
-        if (rk.toLowerCase().replace(/[^a-z0-9]/g, '') === target && rv !== undefined && rv !== null && String(rv).trim() !== '') {
-          return String(rv).trim();
-        }
-      }
-    }
-    return '';
-  };
-
-  const regNo = get('REGISTRATION NO.', 'REGISTRATION NO', 'registrationNo');
-  const carName = get('NAME OF CAR / Vehicle', 'Name of Car / Vehicle', 'carName', 'Car Name');
-  if (!regNo && !carName) return null;
-
-  return {
-    vehicleId: get('Vehicle ID', 'vehicleId') || `CAR-${String(index + 1).padStart(4, '0')}`,
-    firmName: get('Firm Name', 'Firm name', 'firmName', 'FirmName', 'Firm', 'FIRM NAME'),
-    carName: carName,
-    dateOfPurchase: get('DATE OF PURCHASE', 'Date of Purchase', 'dateOfPurchase'),
-    modelNo: get('MODEL NO', 'Model No', 'modelNo'),
-    companyPurchasedFrom: get('COMPANY PURCHASED FROM', 'Company Purchased From', 'companyPurchasedFrom'),
-    fuelType: get('FUEL TYPE', 'Fuel Type', 'fuelType'),
-    registrationNo: regNo,
-    chassisNo: get('CHASSIS NO.', 'CHASSIS NO', 'Chassis No', 'chassisNo'),
-    engineNo: get('ENGINE NO.', 'ENGINE NO', 'Engine No', 'engineNo'),
-    hypothecationBank: get('HYPOTHICATION BANK', 'Hypothecation Bank', 'Hypothication Bank', 'Bank Name', 'hypothecationBank'),
-    loanAmount: get('LOAN AMOUNT', 'Loan Amount', 'loanAmount', 'Total Loan Amount'),
-    emiStartDate: get('EMI START DATE', 'EMI Start Date', 'emiStartDate', 'Loan Start Date'),
-    lastEmiDate: get('LAST EMI DATE', 'Last EMI Date', 'Last Emi Date', 'lastEmiDate'),
-    dateOfReleaseHypothecation: get('DATE OF RELEASE OF HYPOTHICATION', 'Date of Release of Hypothecation', 'Date of Release of Hypothication', 'dateOfReleaseHypothecation'),
-    valueOfCar: get('VALUE OF CAR', 'Value of Car', 'valueOfCar'),
-    emiAmount: get('EMI AMOUNT', 'EMI Amount', 'Emi Amount', 'emiAmount', 'EMI'),
-    totalEmis: get('TOTAL EMIS', 'Total EMIs', 'totalEmis', 'Tenure Months', 'Tenure'),
-    paidEmis: get('PAID EMIS', 'Paid EMIs', 'paidEmis', 'EMIs Paid'),
-    paidEmiAmount: get('PAID EMI AMOUNT', 'Paid EMI Amount', 'paidEmiAmount', 'Total EMI Paid Amount', 'Paid Amount'),
-    remainingLoanAmount: get('REMAINING LOAN AMOUNT', 'Remaining Loan Amount', 'remainingLoanAmount', 'Balance Amount', 'Remaining Amount'),
-    emiStatus: get('EMI Status', 'Is EMI', 'EMI (Y/N)', 'Has EMI', 'EMI'),
-    insuranceAmount: get('INSURANCE AMOUNT', 'Insurance Amount', 'insuranceAmount'),
-    rtoAmount: get('RTO AMOUNT', 'RTO Amount', 'rtoAmount'),
-    companyMobileNo: get('COMPANY MOBILE NO.', 'COMPANY MOBILE NO', 'Company Mobile No', 'companyMobileNo'),
-    servicePersonName: get('SERVICE PERSON NAME', 'Service Person Name', 'servicePersonName'),
-    servicePersonMobileNo: get('SERVICE PERSON MOBILE NO', 'Service Person Mobile No', 'servicePersonMobileNo'),
-    copyOfInsurance: get('Copy Of Insurance', 'Copy of Insurance', 'copyOfInsurance'),
-    copyOfRegistration: get('Copy Of Registration', 'Copy of Registration', 'copyOfRegistration'),
-    nameOfCompany: get('Name Of The Company', 'Name of the Company', 'nameOfCompany'),
-    nameOfOwner: get('Name Of The Owner', 'Name of the Owner', 'nameOfOwner'),
-    agentName: get('Agent Name', 'agentName'),
-    dateOfInsurance: get('Date Of Insurance', 'Date of Insurance', 'dateOfInsurance'),
-    pollutionDate: get('Pollution Date', 'pollutionDate'),
-    timestamp: get('Timestamp', 'timestamp') || createTimestamp(),
-  };
-};
+}
 
 export const checkHasEmi = (car) => {
   if (!car) return false;
@@ -308,783 +119,34 @@ export const checkHasEmi = (car) => {
   return false;
 };
 
-// ─── MAPPER FOR "Insurance Of Vehicle" SHEET ──────────────────────────────────
-export const mapInsuranceToSheet = (ins) => {
-  const boolToYesNo = (val) => {
-    if (val === true || val === 'Yes' || val === 'yes' || val === 'TRUE' || val === 1 || val === '1') return 'Yes';
-    return 'No';
-  };
-
-  return {
-    "Timestamp": ins.timestamp || ins.createdAt || createTimestamp(),
-    "Vehicle ID": ins.vehicleId || '',
-    "Date": ins.date || '',
-    "Car Name": ins.carName || '',
-    "Name Of Company": ins.nameOfCompany || '',
-    "IDV Value": ins.idvValue || '',
-    "Total Premium To Be Paid": ins.totalPremiumToBePaid || '',
-    "Basic Premium": ins.basicPremium || '',
-    "Third Party Premium": ins.thirdPartyPremium || '',
-    "Add On Premium": ins.addOnPremium || '',
-    "Depreciation Reimbursement": boolToYesNo(ins.depreciationReimbursement),
-    "Engine Secure": boolToYesNo(ins.engineSecure),
-    "Consumable Expenses": boolToYesNo(ins.consumableExpenses),
-    "Lose Of Personal Belonging": boolToYesNo(ins.personalBelonging || ins.loseOfPersonalBelonging),
-    "Roadside Assistances": boolToYesNo(ins.roadsideAssistance || ins.roadsideAssistances),
-    "Key Replacement": boolToYesNo(ins.keyReplacement),
-    "Emergency Transport And Hotel": boolToYesNo(ins.emergencyTransportHotel || ins.emergencyTransportAndHotel),
-    "Tax Amount": ins.taxAmount || '',
-    "Total Premium Amount": ins.totalPremiumAmount || '',
-    "Did We Claim Insurance Last Year": ins.claimedLastYear || ins.didWeClaimInsuranceLastYear || 'No',
-    "Is The Proposed Policy Inclusive Of NCB": ins.policyInclusiveOfNcb || ins.isTheProposedPolicyInclusiveOfNcb || 'No',
-    "What Is Premium Of NCB": ins.premiumOfNcb || ins.whatIsPremiumOfNcb || '',
-    "Is It Cashless Policy": ins.cashlessPolicy || ins.isItCashlessPolicy || 'Yes',
-    "Own Damage / Self Accident": ins.hasOwnDamage || 'No',
-    "OD Start Date": ins.odStartDate || '',
-    "OD End Date": ins.odEndDate || '',
-    "Third Party Insurance": ins.hasThirdParty || 'No',
-    "TP Policy No": ins.tpPolicyNo || '',
-    "TP Start Date": ins.tpStartDate || '',
-    "TP End Date": ins.tpEndDate || '',
-    "TPPD Limit": ins.tppdLimit || '',
-    "Personal Accident Cover": ins.hasPaCover || 'No',
-    "PA Cover Type": ins.paCoverType || '',
-    "PA Sum Insured": ins.paSumInsured || '',
-    "PA Premium": ins.paPremium || '',
-    "PA Start Date": ins.paStartDate || '',
-    "PA End Date": ins.paEndDate || '',
-    "PA Nominee Name": ins.paNomineeName || '',
-    "PA Nominee Relation": ins.paNomineeRelation || '',
-  };
-};
-
-export const mapSheetRowToInsurance = (row, index) => {
-  const carName = row['Car Name'] || row.carName || '';
-  const date = row['Date'] || row.date || '';
-  const nameOfCompany = row['Name Of Company'] || row['Name of Company'] || row.nameOfCompany || '';
-  if (!carName && !date && !nameOfCompany) return null;
-
-  const isYes = (val) => val === 'Yes' || val === 'yes' || val === true || val === 'TRUE';
-
-  return {
-    id: row.id || `ins_${index + 1}`,
-    vehicleId: row['Vehicle ID'] || row.vehicleId || '',
-    carName: carName,
-    date: date,
-    nameOfCompany: nameOfCompany,
-    agentName: row['Agent Name'] || row.agentName || '',
-    idvValue: row['IDV Value'] || row.idvValue || '',
-    totalPremiumToBePaid: row['Total Premium To Be Paid'] || row.totalPremiumToBePaid || '',
-    basicPremium: row['Basic Premium'] || row.basicPremium || '',
-    thirdPartyPremium: row['Third Party Premium'] || row.thirdPartyPremium || '',
-    addOnPremium: row['Add On Premium'] || row.addOnPremium || '',
-    depreciationReimbursement: isYes(row['Depreciation Reimbursement'] || row.depreciationReimbursement),
-    engineSecure: isYes(row['Engine Secure'] || row.engineSecure),
-    consumableExpenses: isYes(row['Consumable Expenses'] || row.consumableExpenses),
-    personalBelonging: isYes(row['Lose Of Personal Belonging'] || row['Loss Of Personal Belonging'] || row.personalBelonging),
-    roadsideAssistance: isYes(row['Roadside Assistances'] || row['Roadside Assistance'] || row.roadsideAssistance),
-    keyReplacement: isYes(row['Key Replacement'] || row.keyReplacement),
-    emergencyTransportHotel: isYes(row['Emergency Transport And Hotel'] || row['Emergency Transport & Hotel'] || row.emergencyTransportHotel),
-    taxAmount: row['Tax Amount'] || row.taxAmount || '',
-    totalPremiumAmount: row['Total Premium Amount'] || row.totalPremiumAmount || '',
-    claimedLastYear: row['Did We Claim Insurance Last Year'] || row.claimedLastYear || 'No',
-    policyInclusiveOfNcb: row['Is The Proposed Policy Inclusive Of NCB'] || row.policyInclusiveOfNcb || 'No',
-    premiumOfNcb: row['What Is Premium Of NCB'] || row.premiumOfNcb || '',
-    cashlessPolicy: row['Is It Cashless Policy'] || row.cashlessPolicy || 'Yes',
-    hasOwnDamage: row['Own Damage / Self Accident'] || row.hasOwnDamage || (row['Basic Premium'] ? 'Yes' : 'No'),
-    odStartDate: row['OD Start Date'] || row.odStartDate || date,
-    odEndDate: row['OD End Date'] || row.odEndDate || '',
-    hasThirdParty: row['Third Party Insurance'] || row.hasThirdParty || (row['Third Party Premium'] ? 'Yes' : 'No'),
-    tpPolicyNo: row['TP Policy No'] || row.tpPolicyNo || '',
-    tpStartDate: row['TP Start Date'] || row.tpStartDate || date,
-    tpEndDate: row['TP End Date'] || row.tpEndDate || '',
-    tppdLimit: row['TPPD Limit'] || row.tppdLimit || '750000',
-    hasPaCover: row['Personal Accident Cover'] || row.hasPaCover || (row['PA Premium'] ? 'Yes' : 'No'),
-    paCoverType: row['PA Cover Type'] || row.paCoverType || 'Owner-Driver CPA (₹15 Lakhs)',
-    paSumInsured: row['PA Sum Insured'] || row.paSumInsured || '1500000',
-    paPremium: row['PA Premium'] || row.paPremium || '',
-    paStartDate: row['PA Start Date'] || row.paStartDate || date,
-    paEndDate: row['PA End Date'] || row.paEndDate || '',
-    paNomineeName: row['PA Nominee Name'] || row.paNomineeName || '',
-    paNomineeRelation: row['PA Nominee Relation'] || row.paNomineeRelation || '',
-    timestamp: row['Timestamp'] || row.timestamp || '',
-  };
-};
-
-// ─── MAPPER FOR "Car Repair" / "FMS" SHEET ────────────────────────────────────
-export const mapRepairToSheet = (repair) => ({
-  "Timestamp": repair.timestamp || repair.createdAt || createTimestamp(),
-  "Car Repair No.": repair.repairNo || '',
-  "Vehicle ID": repair.vehicleId || '',
-  "Car Name": repair.carName || '',
-  "Reason For Repair": repair.reasonForRepair || '',
-  "Which Garage Is It Going For Repair": repair.garage || '',
-  "Who Is Taking The Car": repair.whoTakingCar || '',
-  "Insurance to be claimed": repair.insuranceToBeClaimed || 'No',
-  "Department": repair.department || '',
-  ...(repair.plannedDate ? { "Planned 1": repair.plannedDate } : {}),
-});
-
-export const mapSheetRowToRepair = (row, index) => {
-  const repairNo = row['Car Repair No.'] || row['Car Repair No'] || row.repairNo || '';
-  const carName = row['Car Name'] || row.carName || '';
-  const vehicleId = row['Vehicle ID'] || row.vehicleId || '';
-  const reason = row['Reason For Repair'] || row.reasonForRepair || '';
-
-  // Filter out any banner rows like "02-", "Who", "How", "When", "Timestamp"
-  const cleanRepairNo = String(repairNo).trim().toLowerCase();
-  const cleanCarName = String(carName).trim().toLowerCase();
-
-  if (cleanRepairNo === '02-' || cleanRepairNo === 'who' || cleanRepairNo === 'how' || cleanRepairNo === 'when' || cleanRepairNo === 'timestamp' || cleanRepairNo === 'car repair no.' || cleanCarName === 'car name') {
-    return null;
-  }
-
-  if (!repairNo && !carName && !vehicleId && !reason) {
-    return null;
-  }
-
-  const finalRepairNo = repairNo ? String(repairNo).trim() : `REP-${String(index + 1).padStart(4, '0')}`;
-
-  return {
-    id: row.id || `rep_${finalRepairNo}`,
-    repairNo: finalRepairNo,
-    vehicleId: vehicleId || '',
-    carName: carName || '',
-    reasonForRepair: reason || '',
-    garage: row['Which Garage Is It Going For Repair'] || row.garage || '',
-    garageName: row['Garage Name'] || row.garageName || row['Which Garage Is It Going For Repair'] || row.garage || '',
-    whoTakingCar: row['Who Is Taking The Car'] || row.whoTakingCar || '',
-    insuranceToBeClaimed: row['Insurance to be claimed'] || row.insuranceToBeClaimed || 'No',
-    department: row['Department'] || row.department || '',
-    plannedDate: row['Planned 1'] || row['Planned Date'] || row['Planned'] || row.plannedDate || '',
-    actualDate: row['Actual 1'] || row['Actual Date'] || row['Actual'] || row.actualDate || '',
-    expectedCompletionDate: row['Expected Repair Completion Date'] || row['Expected Completion Date'] || row['Date of Delivery From Garage'] || row['Date Of Delivery From Garage'] || row.expectedCompletionDate || '',
-    plannedDate2: row['Planned 2'] || row['Planned Date 2'] || row.plannedDate2 || '',
-    actualDate2: row['Actual 2'] || row['Actual Date 2'] || row.actualDate2 || '',
-    plannedDate3: row['Planned 3'] || row['Planned Date 3'] || row.plannedDate3 || '',
-    actualDate3: row['Actual 3'] || row['Actual Date 3'] || row.actualDate3 || '',
-    dateVehicleReceived: row['Date Of Vechile Received Back'] || row['Date Of Vehicle Received Back'] || row['Date of Vehicle Received Back'] || row.dateVehicleReceived || '',
-    kmAtTimeOfRepair: row['K.M at The Time Of Repair'] || row['KM at The Time Of Repair'] || row.kmAtTimeOfRepair || '',
-    repairWorkDone: row['Reapir Work Done'] || row['Repair Work Done'] || row.repairWorkDone || '',
-    partsAmount: row['Parts Amount'] || row.partsAmount || '',
-    serviceAmount: row['Service Amount'] || row.serviceAmount || '',
-    insuranceClaimed: row['Insurance Claimed (If Any)'] || row['Insurance Claimed'] || row.insuranceClaimed || 'No',
-    insuranceAmount: row['Insurance Amount ( If Claimed )'] || row['Insurance Amount (If Claimed)'] || row.insuranceAmount || '',
-    billAmount: row['Bill Amount'] || row.billAmount || '',
-    billImage: row['Bill Image'] || row.billImage || '',
-    photoOfOffer: row['Photo Of Offer'] || row['Photo of Offer'] || row.photoOfOffer || '',
-    insurance: row['Insurance'] || row.insurance || '',
-    typesOfRepair: row['Types Of Repair'] || row['Types of Repair'] || row.typesOfRepair || [],
-    repairStatus: row.repairStatus || (row['Actual 3'] ? 'Delivered' : (row['Actual 2'] ? 'Approved' : (row['Actual 1'] ? 'Offer Received' : 'Created'))),
-    timestamp: row['Timestamp'] || row.timestamp || createTimestamp(),
-    createdAt: row['Timestamp'] || row.createdAt || createTimestamp(),
-  };
-};
-
-// ─── MAPPER FOR "If Accident / Insurance Claims" SHEET ────────────────────────
-export const mapSheetRowToClaim = (row, index) => {
-  if (!row || typeof row !== 'object') return null;
-  const get = (...keys) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
-        return String(row[k]).trim();
-      }
-      const target = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [rk, rv] of Object.entries(row)) {
-        if (rk.toLowerCase().replace(/[^a-z0-9]/g, '') === target && rv !== undefined && rv !== null && String(rv).trim() !== '') {
-          return String(rv).trim();
-        }
-      }
-    }
-    return '';
-  };
-
-  const claimNo = get('Claim No.', 'Claim No', 'claimNo', 'CLAIM NO');
-  const repairNo = get('Repair No.', 'Repair No', 'repairNo', 'REPAIR NO');
-  const vehicleId = get('Vehicle ID', 'vehicleId', 'VEHICLE ID');
-  const vehicleName = get('Vehicle Name', 'Vehicle / Car Name', 'vehicleName', 'Car Name', 'carName');
-  if (!claimNo && !repairNo && !vehicleId && !vehicleName) return null;
-
-  return {
-    id: get('id') || `clm_${claimNo || index + 1}`,
-    claimNo: claimNo || `CLM-${String(index + 1).padStart(4, '0')}`,
-    repairNo: repairNo || '',
-    vehicleId: vehicleId || '',
-    vehicleName: vehicleName || '',
-    registrationNo: get('Registration No.', 'Registration No', 'registrationNo'),
-    dateOfAccident: get('Date of Accident', 'Date Of Accident', 'dateOfAccident'),
-    timeOfAccident: get('Time of Accident', 'Time Of Accident', 'timeOfAccident'),
-    accidentLocation: get('Accident Location', 'accidentLocation'),
-    accidentReason: get('Accident Reason', 'accidentReason'),
-    driverName: get('Driver Name', 'driverName'),
-    driverMobileNo: get('Driver Mobile No.', 'Driver Mobile', 'driverMobileNo'),
-    insuranceCompany: get('Insurance Company', 'insuranceCompany'),
-    policyNo: get('Policy No.', 'Policy No', 'policyNo'),
-    policyValidity: get('Policy Validity', 'policyValidity'),
-    insuranceClaim: get('Insurance Claim', 'insuranceClaim') || 'Yes',
-    estimatedClaimAmount: get('Estimated Claim Amount (₹)', 'Estimated Claim Amount', 'Est. Amount', 'estimatedClaimAmount'),
-    typeOfClaim: get('Type Of Claim', 'typeOfClaim') || 'Own Damage',
-    claimMode: get('Claim Mode', 'Claim Settlement Mode', 'Settlement Mode', 'claimMode') || 'Cashless Claim (Network Garage)',
-    accidentPhotos: get('Accident Photos', 'Accident Photo', 'accidentPhotos', 'accidentPhoto', 'photos', 'photo'),
-    firRequired: get('FIR Required?', 'FIR Required', 'firRequired') || 'No',
-    firCopy: get('FIR Copy', 'FIR', 'firCopy'),
-    policeReport: get('Police Report', 'policeReport', 'Police Report Copy', 'Report'),
-    otherDocuments: get('Other Documents', 'Other Document', 'otherDocuments', 'otherDocument', 'Documents', 'Document'),
-    claimIntimatedDate: get('Claim Intimated Date', 'Claim Intimated', 'claimIntimatedDate'),
-    claimIntimationNo: get('Claim Intimation No.', 'Claim Intimation No', 'Claim Intimation', 'claimIntimationNo'),
-    surveyorName: get('Surveyor Name', 'Surveyor', 'surveyorName'),
-    surveyorMobileNo: get('Surveyor Mobile No.', 'Surveyor Mobile', 'surveyorMobileNo'),
-    surveyDate: get('Survey Date', 'surveyDate'),
-    surveyStatus: get('Survey', 'Survey Status', 'surveyStatus') || 'Pending',
-    claimStatus: get('Claim Status', 'claimStatus') || 'Claim Under Process',
-    claimApprovedAmount: get('Claim Approved Amount (₹)', 'Claim Approved Amount', 'Approved Amount', 'claimApprovedAmount'),
-    claimRejectedReason: get('Claim Rejected Reason', 'Rejection Reason', 'claimRejectedReason'),
-    expectedSettlementDate: get('Expected Settlement Date', 'Expected Settlement', 'expectedSettlementDate'),
-    claimSettlementDate: get('Settlement Date', 'Claim Settlement Date', 'claimSettlementDate'),
-    remarks: get('Remarks', 'remarks'),
-    planned: get('Planned', 'planned'),
-    actual: get('Actual', 'actual'),
-    delay: get('Delay', 'delay'),
-    stage1Completed: get('Stage 1 Completed', 'stage1Completed') !== undefined ? (get('Stage 1 Completed', 'stage1Completed') === true || get('Stage 1 Completed', 'stage1Completed') === 'true' || get('Stage 1 Completed', 'stage1Completed') === 'Yes') : undefined,
-    stage2Completed: get('Stage 2 Completed', 'stage2Completed') !== undefined ? (get('Stage 2 Completed', 'stage2Completed') === true || get('Stage 2 Completed', 'stage2Completed') === 'true' || get('Stage 2 Completed', 'stage2Completed') === 'Yes') : undefined,
-    stage3Completed: get('Stage 3 Completed', 'stage3Completed') !== undefined ? (get('Stage 3 Completed', 'stage3Completed') === true || get('Stage 3 Completed', 'stage3Completed') === 'true' || get('Stage 3 Completed', 'stage3Completed') === 'Yes') : undefined,
-    createdAt: get('Timestamp', 'createdAt') || createTimestamp(),
-  };
-};
-
-// ─── SEED DATA ────────────────────────────────────────────────────────────────
+// ─── SEED DUMMY DATA ──────────────────────────────────────────────────────────
 const seed = () => {
-  const version = 'cms_seeded_v11';
-  if (localStorage.getItem(version)) return;
-  localStorage.setItem(version, 'true');
-  localStorage.removeItem(KEYS.DELIVERIES);
-  localStorage.removeItem(KEYS.DELIVERY_PLANNING);
-
-  if (getScriptUrl()) {
-    // If live Google Sheets connection is configured, initialize empty so sheets are authoritative!
-    if (!localStorage.getItem(KEYS.CARS)) localStorage.setItem(KEYS.CARS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.INSURANCE)) localStorage.setItem(KEYS.INSURANCE, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.REPAIRS)) localStorage.setItem(KEYS.REPAIRS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.CLAIMS)) localStorage.setItem(KEYS.CLAIMS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.VENDOR_OFFERS)) localStorage.setItem(KEYS.VENDOR_OFFERS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.DELIVERIES)) localStorage.setItem(KEYS.DELIVERIES, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.PAYMENTS)) localStorage.setItem(KEYS.PAYMENTS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.CHALLANS)) localStorage.setItem(KEYS.CHALLANS, JSON.stringify([]));
-    if (!localStorage.getItem(KEYS.FASTAGS)) localStorage.setItem(KEYS.FASTAGS, JSON.stringify([]));
-    return;
-  }
-
-  const cars = [
-    {
-      vehicleId: 'CAR-0001',
-      carName: 'Toyota Fortuner',
-      dateOfPurchase: '2024-01-15',
-      modelNo: 'FORT-2024',
-      companyPurchasedFrom: 'Toyota Motors Delhi',
-      fuelType: 'Diesel',
-      registrationNo: 'DL-01-AB-1234',
-      chassisNo: 'CHS001234567',
-      engineNo: 'ENG001234567',
-      hypothecationBank: 'HDFC Bank',
-      lastEmiDate: '2027-01-15',
-      dateOfReleaseHypothecation: '2027-03-01',
-      valueOfCar: '3500000',
-      emiAmount: '75000',
-      insuranceAmount: '45000',
-      rtoAmount: '125000',
-      companyMobileNo: '9876543210',
-      servicePersonName: 'Ramesh Kumar',
-      servicePersonMobileNo: '9123456789',
-      copyOfInsurance: '',
-      copyOfRegistration: '',
-      nameOfCompany: 'Acme Corp Pvt Ltd',
-      nameOfOwner: 'Mr. Vikram Singh',
-      agentName: 'Suresh Sharma',
-      dateOfInsurance: '2025-09-10',
-      pollutionDate: '2025-09-10',
-      timestamp: createTimestamp(),
-      createdAt: createTimestamp(),
-    },
-    {
-      vehicleId: 'CAR-0002',
-      carName: 'Mahindra Scorpio',
-      dateOfPurchase: '2023-06-10',
-      modelNo: 'SCOR-2023',
-      companyPurchasedFrom: 'Mahindra Showroom Mumbai',
-      fuelType: 'Diesel',
-      registrationNo: 'MH-02-CD-5678',
-      chassisNo: 'CHS009876543',
-      engineNo: 'ENG009876543',
-      hypothecationBank: 'SBI Bank',
-      lastEmiDate: '2026-06-10',
-      dateOfReleaseHypothecation: '2026-08-01',
-      valueOfCar: '1800000',
-      emiAmount: '42000',
-      insuranceAmount: '28000',
-      rtoAmount: '75000',
-      companyMobileNo: '9876543211',
-      servicePersonName: 'Ajay Mehta',
-      servicePersonMobileNo: '9234567890',
-      copyOfInsurance: '',
-      copyOfRegistration: '',
-      nameOfCompany: 'Acme Corp Pvt Ltd',
-      nameOfOwner: 'Ms. Priya Patel',
-      agentName: 'Deepak Joshi',
-      dateOfInsurance: '2026-05-15',
-      pollutionDate: '2026-05-15',
-      timestamp: createTimestamp(),
-      createdAt: createTimestamp(),
-    },
-    {
-      vehicleId: 'CAR-0003',
-      carName: 'Maruti Swift',
-      dateOfPurchase: '2023-11-20',
-      modelNo: 'SWIFT-2023',
-      companyPurchasedFrom: 'Maruti Suzuki Noida',
-      fuelType: 'Petrol',
-      registrationNo: 'UP-16-EF-9012',
-      chassisNo: 'CHS005556789',
-      engineNo: 'ENG005556789',
-      hypothecationBank: 'ICICI Bank',
-      lastEmiDate: '2026-11-20',
-      dateOfReleaseHypothecation: '2027-01-01',
-      valueOfCar: '750000',
-      emiAmount: '18000',
-      insuranceAmount: '12000',
-      rtoAmount: '30000',
-      companyMobileNo: '9876543212',
-      servicePersonName: 'Karan Soni',
-      servicePersonMobileNo: '9345678901',
-      copyOfInsurance: '',
-      copyOfRegistration: '',
-      nameOfCompany: 'Acme Corp Pvt Ltd',
-      nameOfOwner: 'Mr. Anil Gupta',
-      agentName: 'Mohit Verma',
-      dateOfInsurance: '',
-      pollutionDate: '',
-      timestamp: createTimestamp(),
-      createdAt: createTimestamp(),
-    },
-  ];
-
-  const insurance = [
-    {
-      id: 'ins_001',
-      vehicleId: 'CAR-0001',
-      timestamp: createTimestamp(),
-      date: '2025-09-10',
-      carName: 'Toyota Fortuner',
-      nameOfCompany: 'New India Assurance',
-      idvValue: '2800000',
-      totalPremiumToBePaid: '45000',
-      basicPremium: '32000',
-      thirdPartyPremium: '5000',
-      addOnPremium: '5000',
-      depreciationReimbursement: true,
-      engineSecure: true,
-      consumableExpenses: false,
-      personalBelonging: false,
-      roadsideAssistance: true,
-      keyReplacement: false,
-      emergencyTransportHotel: false,
-      taxAmount: '3000',
-      totalPremiumAmount: '45000',
-      claimedLastYear: 'No',
-      policyInclusiveOfNcb: 'Yes',
-      premiumOfNcb: '6000',
-      cashlessPolicy: 'Yes',
-      validityDate: '2026-09-09',
-      renewalDate: '2026-09-09',
-      createdAt: createTimestamp(),
-    },
-    {
-      id: 'ins_002',
-      vehicleId: 'CAR-0002',
-      timestamp: createTimestamp(),
-      date: '2026-05-15',
-      carName: 'Mahindra Scorpio',
-      nameOfCompany: 'ICICI Lombard',
-      idvValue: '1400000',
-      totalPremiumToBePaid: '28000',
-      basicPremium: '20000',
-      thirdPartyPremium: '4000',
-      addOnPremium: '2000',
-      depreciationReimbursement: false,
-      engineSecure: false,
-      consumableExpenses: false,
-      personalBelonging: false,
-      roadsideAssistance: true,
-      keyReplacement: false,
-      emergencyTransportHotel: false,
-      taxAmount: '2000',
-      totalPremiumAmount: '28000',
-      claimedLastYear: 'Yes',
-      policyInclusiveOfNcb: 'No',
-      premiumOfNcb: '0',
-      cashlessPolicy: 'Yes',
-      validityDate: '2027-05-14',
-      renewalDate: '2027-05-14',
-      createdAt: createTimestamp(),
-    },
-  ];
-
-  const repairs = [
-    {
-      id: 'rep_001',
-      repairNo: 'REP-0001',
-      vehicleId: 'CAR-0001',
-      timestamp: createTimestamp(),
-      carName: 'Toyota Fortuner',
-      reasonForRepair: 'Front bumper damage due to minor accident',
-      garage: 'AutoCare Garage, Sector 18 Noida',
-      whoTakingCar: 'Ramesh Kumar',
-      insuranceToBeClaimed: 'Yes',
-      department: 'Operations',
-      repairStatus: 'Created',
-      createdAt: createTimestamp(),
-    },
-    {
-      id: 'rep_002',
-      repairNo: 'REP-0002',
-      vehicleId: 'CAR-0002',
-      timestamp: createTimestamp(),
-      carName: 'Mahindra Scorpio',
-      reasonForRepair: 'Engine oil leak and servicing',
-      garage: 'Speed Motors Workshop',
-      whoTakingCar: 'Ajay Mehta',
-      insuranceToBeClaimed: 'No',
-      department: 'Sales',
-      repairStatus: 'Created',
-      createdAt: createTimestamp(),
-    },
-  ];
-
-  const claims = [
-    {
-      id: 'clm_001',
-      claimNo: 'CLM-0001',
-      repairNo: 'REP-0001',
-      vehicleId: 'CAR-0001',
-      vehicleName: 'Toyota Fortuner',
-      registrationNo: 'DL-01-AB-1234',
-      dateOfAccident: '2026-08-20',
-      timeOfAccident: '14:30',
-      accidentLocation: 'NH-48, Delhi–Gurugram Expressway',
-      accidentReason: 'Rear-end collision at traffic signal',
-      driverName: 'Ramesh Kumar',
-      driverMobileNo: '9123456789',
-      insuranceCompany: 'New India Assurance',
-      policyNo: 'NIA-2025-001234',
-      policyValidity: '2026-09-09',
-      insuranceClaim: 'Yes',
-      estimatedClaimAmount: '180000',
-      accidentPhotos: '',
-      firRequired: 'No',
-      firCopy: '',
-      policeReport: '',
-      otherDocuments: '',
-      claimIntimatedDate: '2026-08-21',
-      claimIntimationNo: 'INT-2026-001',
-      surveyorName: 'Mr. Deepak Sharma',
-      surveyorMobileNo: '9876501234',
-      surveyDate: '2026-08-23',
-      surveyStatus: 'Completed',
-      claimStatus: 'Claim Under Process',
-      claimApprovedAmount: '',
-      claimRejectedReason: '',
-      claimSettlementDate: '',
-      remarks: 'Awaiting claim processing',
-      createdAt: createTimestamp(),
-    },
-  ];
-
-  const vendorOffers = [];
-  const deliveryPlanning = [];
-  const deliveries = [];
-  const payments = [];
-
-  localStorage.setItem(KEYS.CARS, JSON.stringify(cars));
-  localStorage.setItem(KEYS.INSURANCE, JSON.stringify(insurance));
-  localStorage.setItem(KEYS.REPAIRS, JSON.stringify(repairs));
-  localStorage.setItem(KEYS.CLAIMS, JSON.stringify(claims));
-  localStorage.setItem(KEYS.VENDOR_OFFERS, JSON.stringify(vendorOffers));
-  localStorage.setItem(KEYS.DELIVERY_PLANNING, JSON.stringify(deliveryPlanning));
-  localStorage.setItem(KEYS.DELIVERIES, JSON.stringify(deliveries));
-  localStorage.setItem(KEYS.PAYMENTS, JSON.stringify(payments));
-  if (!localStorage.getItem(KEYS.CHALLANS)) {
-    localStorage.setItem(KEYS.CHALLANS, JSON.stringify([]));
-  }
-  if (!localStorage.getItem(KEYS.FASTAGS)) {
-    localStorage.setItem(KEYS.FASTAGS, JSON.stringify([]));
-  }
-  localStorage.setItem(version, '1');
+  const alreadySeeded = !!localStorage.getItem(SEED_VERSION);
+  const missingKeys = Object.entries(KEYS).filter(([name, key]) => name !== 'USERS' && localStorage.getItem(key) === null);
+  if (alreadySeeded && missingKeys.length === 0) return;
+  const data = buildSeedData();
+  Object.entries(KEYS).forEach(([name, key]) => {
+    if (name === 'USERS') return; // users are seeded by AuthContext
+    // On first run fill everything; later only fill modules added after the first seed
+    if (alreadySeeded && localStorage.getItem(key) !== null) return;
+    localStorage.setItem(key, JSON.stringify(data[name] || []));
+  });
+  localStorage.setItem(SEED_VERSION, 'true');
 };
-
-if (!localStorage.getItem(KEYS.CHALLANS)) {
-  localStorage.setItem(KEYS.CHALLANS, JSON.stringify([]));
-}
-if (!localStorage.getItem(KEYS.FASTAGS)) {
-  localStorage.setItem(KEYS.FASTAGS, JSON.stringify([]));
-}
 
 seed();
 
-const delay = (ms = 100) => new Promise((res) => setTimeout(res, ms));
-
-// Helper to match sheet keys flexibly from Google Apps Script response
-const getSheetDataFromRemote = (remoteData, candidateNames) => {
-  if (!remoteData || typeof remoteData !== 'object') return null;
-  const normalizedCandidates = candidateNames.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  for (const [key, value] of Object.entries(remoteData)) {
-    const normKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (normalizedCandidates.includes(normKey)) {
-      return { key, data: value };
-    }
-  }
-  return null;
+// Re-seed the dummy data (wipes all local records except users)
+export const resetDemoData = () => {
+  localStorage.removeItem(SEED_VERSION);
+  Object.keys(cache).forEach(k => delete cache[k]);
+  seed();
+  notifyStoreUpdate();
 };
 
-// ─── LIVE 2-WAY SYNC FROM SHEETS ──────────────────────────────────────────────
-let isSyncing = false;
-export const syncAllFromSheets = async (silent = false) => {
-  if (isSyncing) return false;
-  isSyncing = true;
-  try {
-    const remoteData = await fetchFromSheet('getAll');
-    if (remoteData) {
-      let changed = false;
-
-      // 1. Purchase Car Details
-      const carsSheet = getSheetDataFromRemote(remoteData, ['Purchase Car Details', 'Purchase Car', 'cars', 'purchasecardetails', 'purchasecar']);
-      if (carsSheet && Array.isArray(carsSheet.data)) {
-        const validMappedCars = carsSheet.data.map(mapSheetRowToCar).filter(Boolean);
-        const current = load(KEYS.CARS);
-        if (JSON.stringify(current) !== JSON.stringify(validMappedCars)) {
-          localStorage.setItem(KEYS.CARS, JSON.stringify(validMappedCars));
-          changed = true;
-        }
-      }
-
-      // 2. Repairs (FMS / Car_Repair) + Vendor Offers + Deliveries + Payments
-      const fmsSheet = getSheetDataFromRemote(remoteData, ['FMS', 'Car Repair', 'Car_Repair', 'repairs', 'fms']);
-      if (fmsSheet && Array.isArray(fmsSheet.data)) {
-        const validMappedRepairs = fmsSheet.data.map(mapSheetRowToRepair).filter(Boolean);
-        const currentRepairs = load(KEYS.REPAIRS);
-        if (JSON.stringify(currentRepairs) !== JSON.stringify(validMappedRepairs)) {
-          localStorage.setItem(KEYS.REPAIRS, JSON.stringify(validMappedRepairs));
-          changed = true;
-        }
-
-        // Also sync submitted vendor offers from FMS sheet
-        const currentOffers = load(KEYS.VENDOR_OFFERS);
-        const fmsOffers = [];
-        validMappedRepairs.forEach(r => {
-          const hasOffer = r.actualDate || r.photoOfOffer || (Array.isArray(r.typesOfRepair) && r.typesOfRepair.length > 0) || (typeof r.typesOfRepair === 'string' && r.typesOfRepair.length > 0);
-          if (hasOffer) {
-            const existingOffer = currentOffers.find(o => o.repairNo === r.repairNo);
-            const typesArr = Array.isArray(r.typesOfRepair) ? r.typesOfRepair : (typeof r.typesOfRepair === 'string' ? r.typesOfRepair.split(',').map(s => s.trim()).filter(Boolean) : []);
-            const isApproved = !!(r.actualDate2 || existingOffer?.approvalStatus === 'Approved' || r.repairStatus === 'Approved');
-
-            fmsOffers.push({
-              id: existingOffer?.id || `offer_${r.repairNo}`,
-              repairNo: r.repairNo,
-              vehicleId: r.vehicleId,
-              carName: r.carName,
-              garageName: r.garageName || r.garage || existingOffer?.garageName || '',
-              expectedCompletionDate: r.expectedCompletionDate || existingOffer?.expectedCompletionDate || '',
-              plannedDate: r.plannedDate || '',
-              actualDate: r.actualDate || '',
-              plannedDate2: r.plannedDate2 || '',
-              actualDate2: r.actualDate2 || existingOffer?.actualDate2 || '',
-              photoOfOffer: r.photoOfOffer,
-              insurance: r.insurance || 'No',
-              typesOfRepair: typesArr,
-              approvalStatus: isApproved ? 'Approved' : (r.repairStatus === 'Rejected' ? 'Rejected' : 'Pending'),
-              approvedAt: r.actualDate2 || existingOffer?.approvedAt || '',
-              timestamp: r.actualDate || r.timestamp,
-              createdAt: r.actualDate || r.createdAt
-            });
-          }
-        });
-
-        if (JSON.stringify(currentOffers) !== JSON.stringify(fmsOffers)) {
-          localStorage.setItem(KEYS.VENDOR_OFFERS, JSON.stringify(fmsOffers));
-          changed = true;
-        }
-
-        // Also sync submitted deliveries from FMS sheet
-        const currentDeliveries = load(KEYS.DELIVERIES);
-        const fmsDeliveries = [];
-        validMappedRepairs.forEach(r => {
-          if (r.actualDate3 || r.dateVehicleReceived) {
-            const existingDel = currentDeliveries.find(d => d.repairNo === r.repairNo);
-            fmsDeliveries.push({
-              id: existingDel?.id || `del_${r.repairNo}`,
-              repairNo: r.repairNo,
-              vehicleId: r.vehicleId,
-              vehicleName: r.carName || existingDel?.vehicleName || '',
-              garageName: r.garageName || existingDel?.garageName || '',
-              dateVehicleReceived: r.dateVehicleReceived || existingDel?.dateVehicleReceived || '',
-              kmAtTimeOfRepair: r.kmAtTimeOfRepair || existingDel?.kmAtTimeOfRepair || '',
-              repairWorkDone: r.repairWorkDone || existingDel?.repairWorkDone || '',
-              partsAmount: r.partsAmount || existingDel?.partsAmount || '',
-              serviceAmount: r.serviceAmount || existingDel?.serviceAmount || '',
-              insuranceClaimed: r.insuranceClaimed || existingDel?.insuranceClaimed || 'No',
-              insuranceAmount: r.insuranceAmount || existingDel?.insuranceAmount || '',
-              billAmount: r.billAmount || existingDel?.billAmount || '',
-              billImage: r.billImage || existingDel?.billImage || '',
-              deliveryStatus: 'Delivery Submitted',
-              deliveredAt: r.actualDate3 || existingDel?.deliveredAt || '',
-              actualDate3: r.actualDate3 || existingDel?.actualDate3 || '',
-              submittedAt: r.actualDate3 || existingDel?.submittedAt || '',
-              timestamp: r.actualDate3 || r.timestamp,
-            });
-          }
-        });
-
-        if (JSON.stringify(currentDeliveries) !== JSON.stringify(fmsDeliveries)) {
-          localStorage.setItem(KEYS.DELIVERIES, JSON.stringify(fmsDeliveries));
-          changed = true;
-        }
-
-        // Also sync payments from repairs/deliveries
-        const currentPayments = load(KEYS.PAYMENTS);
-        const fmsPayments = [];
-        validMappedRepairs.forEach(r => {
-          if (r.actualDate3 || r.dateVehicleReceived || r.repairStatus === 'Delivered' || r.repairStatus === 'Payment Completed') {
-            const existingPay = currentPayments.find(p => p.repairNo === r.repairNo);
-            fmsPayments.push({
-              id: existingPay?.id || `pay_${r.repairNo}`,
-              repairNo: r.repairNo,
-              vehicleId: r.vehicleId,
-              carName: r.carName,
-              garageName: r.garageName || r.garage || existingPay?.garageName || '',
-              billAmount: r.billAmount || existingPay?.billAmount || '0',
-              paymentStatus: r.repairStatus === 'Payment Completed' ? 'Payment Completed' : (existingPay?.paymentStatus || 'Payment Pending'),
-              paymentMethod: existingPay?.paymentMethod || 'Bank Transfer',
-              paidAmount: existingPay?.paidAmount || r.billAmount || '0',
-              paymentDate: existingPay?.paymentDate || r.actualDate3 || '',
-              notes: existingPay?.notes || '',
-              timestamp: r.actualDate3 || r.timestamp,
-            });
-          }
-        });
-
-        if (JSON.stringify(currentPayments) !== JSON.stringify(fmsPayments)) {
-          localStorage.setItem(KEYS.PAYMENTS, JSON.stringify(fmsPayments));
-          changed = true;
-        }
-      }
-
-      // 3. Claims
-      const claimsSheet = getSheetDataFromRemote(remoteData, ['If Accident / Insurance Claims', 'claims', 'accidentclaims', 'accident_claims', 'ifaccidentinsuranceclaims']);
-      if (claimsSheet && Array.isArray(claimsSheet.data)) {
-        const validMappedClaims = claimsSheet.data.map(mapSheetRowToClaim).filter(Boolean);
-        const currentClaims = load(KEYS.CLAIMS);
-        if (JSON.stringify(currentClaims) !== JSON.stringify(validMappedClaims)) {
-          localStorage.setItem(KEYS.CLAIMS, JSON.stringify(validMappedClaims));
-          changed = true;
-        }
-      }
-
-      // 4. Insurance
-      const insSheet = getSheetDataFromRemote(remoteData, ['Insurance Of Vehicle', 'Insurance of Vehicle', 'Insurance_Of_Vehicle', 'insurance']);
-      if (insSheet && Array.isArray(insSheet.data)) {
-        const mappedIns = insSheet.data.map(mapSheetRowToInsurance).filter(Boolean);
-        const currentIns = load(KEYS.INSURANCE);
-        if (JSON.stringify(currentIns) !== JSON.stringify(mappedIns)) {
-          localStorage.setItem(KEYS.INSURANCE, JSON.stringify(mappedIns));
-          changed = true;
-        }
-      }
-
-      // 5. Challans
-      const challansSheet = getSheetDataFromRemote(remoteData, ['Challan Details', 'Challans', 'challans', 'Challan']);
-      if (challansSheet && Array.isArray(challansSheet.data)) {
-        const mappedChallans = challansSheet.data.map(mapSheetRowToChallan).filter(Boolean);
-        const currentChallans = load(KEYS.CHALLANS);
-        if (JSON.stringify(currentChallans) !== JSON.stringify(mappedChallans)) {
-          localStorage.setItem(KEYS.CHALLANS, JSON.stringify(mappedChallans));
-          changed = true;
-        }
-      }
-
-      // 6. Fastags
-      const fastagSheet = getSheetDataFromRemote(remoteData, ['Fastag Details', 'Fastags', 'fastag', 'Fastag']);
-      if (fastagSheet && Array.isArray(fastagSheet.data)) {
-        const mappedFastags = fastagSheet.data.map(mapSheetRowToFastag).filter(Boolean);
-        const currentFastags = load(KEYS.FASTAGS);
-        if (JSON.stringify(currentFastags) !== JSON.stringify(mappedFastags)) {
-          localStorage.setItem(KEYS.FASTAGS, JSON.stringify(mappedFastags));
-          changed = true;
-        }
-      }
-
-      // 7. Login Page / Users
-      const loginSheet = getSheetDataFromRemote(remoteData, ['Login Page', 'loginpage', 'Login', 'Users']);
-      if (loginSheet && Array.isArray(loginSheet.data)) {
-        const mappedUsers = loginSheet.data.map(mapSheetRowToUser).filter(Boolean);
-        if (mappedUsers.length > 0) {
-          const currentUsersRaw = localStorage.getItem('cms_users');
-          const currentUsers = currentUsersRaw ? JSON.parse(currentUsersRaw) : [];
-          if (JSON.stringify(currentUsers) !== JSON.stringify(mappedUsers)) {
-            localStorage.setItem('cms_users', JSON.stringify(mappedUsers));
-            changed = true;
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('cms_users_updated', { detail: mappedUsers }));
-            }
-          }
-        }
-      }
-
-      // Ensure any repair with insuranceToBeClaimed === 'Yes' has its claim created and synced
-      try {
-        await syncPendingRepairClaims();
-      } catch (e) {}
-
-      if (changed) {
-        notifyStoreUpdate();
-      }
-      return true;
-    }
-    return false;
-  } catch (err) {
-    if (!silent) console.warn('Sync error:', err);
-    return false;
-  } finally {
-    isSyncing = false;
-  }
-};
-
-// ─── BACKGROUND LIVE SYNC INITIALIZER ─────────────────────────────────────────
-export const initLiveSyncService = (intervalMs = 5000) => {
-  if (typeof window === 'undefined') return;
-
-  syncAllFromSheets(true);
-
-  const intervalId = setInterval(() => {
-    if (document.visibilityState === 'visible') {
-      syncAllFromSheets(true);
-    }
-  }, intervalMs);
-
-  const onFocus = () => syncAllFromSheets(true);
-  window.addEventListener('focus', onFocus);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      syncAllFromSheets(true);
-    }
-  });
-
-  return () => {
-    clearInterval(intervalId);
-    window.removeEventListener('focus', onFocus);
-  };
-};
 
 // ─── CARS CRUD ────────────────────────────────────────────────────────────────
 export const getCars = async () => {
-  await delay();
   return load(KEYS.CARS);
 };
 
@@ -1099,12 +161,6 @@ export const addCar = async (car) => {
   cars.push(carWithTimestamp);
   save(KEYS.CARS, cars);
 
-  const payload = mapCarToSheet(carWithTimestamp);
-  await sendToSheet({
-    action: 'add',
-    sheetName: 'Purchase Car Details',
-    data: payload
-  });
   return carWithTimestamp;
 };
 
@@ -1115,14 +171,6 @@ export const updateCar = async (vehicleId, updates) => {
   cars[idx] = { ...cars[idx], ...updates, updatedAt: createTimestamp() };
   save(KEYS.CARS, cars);
 
-  const payload = mapCarToSheet(cars[idx]);
-  await sendToSheet({
-    action: 'update',
-    sheetName: 'Purchase Car Details',
-    keyField: 'REGISTRATION NO.',
-    keyValue: cars[idx].registrationNo,
-    data: payload
-  });
   return cars[idx];
 };
 
@@ -1135,19 +183,11 @@ export const deleteCar = async (vehicleId) => {
   if (carToDelete) {
     const keyField = carToDelete.registrationNo ? 'REGISTRATION NO.' : 'Vehicle ID';
     const keyValue = carToDelete.registrationNo || carToDelete.vehicleId;
-    await sendToSheet({
-      action: 'delete',
-      sheetName: 'Purchase Car Details',
-      keyField,
-      keyValue,
-      data: { [keyField]: keyValue }
-    });
   }
 };
 
 // ─── INSURANCE CRUD ───────────────────────────────────────────────────────────
 export const getInsurance = async () => {
-  await delay();
   return load(KEYS.INSURANCE);
 };
 
@@ -1157,7 +197,6 @@ export const addInsurance = async (ins) => {
   const item = { ...ins, timestamp: now, createdAt: now };
   all.push(item);
   save(KEYS.INSURANCE, all);
-  await sendToSheet({ action: 'add', sheetName: 'Insurance Of Vehicle', data: mapInsuranceToSheet(item) });
   return item;
 };
 
@@ -1167,7 +206,6 @@ export const updateInsurance = async (id, updates) => {
   if (idx === -1) throw new Error('Insurance not found');
   all[idx] = { ...all[idx], ...updates, updatedAt: createTimestamp() };
   save(KEYS.INSURANCE, all);
-  await sendToSheet({ action: 'update', sheetName: 'Insurance Of Vehicle', keyField: 'Car Name', keyValue: all[idx].carName, data: mapInsuranceToSheet(all[idx]) });
   return all[idx];
 };
 
@@ -1185,12 +223,10 @@ export const renewInsurance = async (vehicleId, renewalData) => {
   
   if (idx !== -1) {
     all[idx] = updatedRecord;
-    sendToSheet({ action: 'update', sheetName: 'Insurance Of Vehicle', keyField: 'Car Name', keyValue: updatedRecord.carName, data: mapInsuranceToSheet(updatedRecord) });
   } else {
     const newId = `ins_${Date.now()}`;
     const newRecord = { ...updatedRecord, id: newId, createdAt: now };
     all.push(newRecord);
-    sendToSheet({ action: 'add', sheetName: 'Insurance Of Vehicle', data: mapInsuranceToSheet(newRecord) });
   }
   save(KEYS.INSURANCE, all);
   
@@ -1201,13 +237,6 @@ export const renewInsurance = async (vehicleId, renewalData) => {
     cars[carIdx].dateOfInsurance = renewalData.date;
     cars[carIdx].updatedAt = now;
     save(KEYS.CARS, cars);
-    sendToSheet({
-      action: 'update',
-      sheetName: 'Purchase Car Details',
-      keyField: 'REGISTRATION NO.',
-      keyValue: cars[carIdx].registrationNo,
-      data: mapCarToSheet(cars[carIdx])
-    });
   }
   return updatedRecord;
 };
@@ -1220,40 +249,13 @@ export const deleteInsurance = async (id) => {
   if (item) {
     const keyField = item.carName ? 'Car Name' : 'Vehicle ID';
     const keyValue = item.carName || item.vehicleId;
-    await sendToSheet({
-      action: 'delete',
-      sheetName: 'Insurance Of Vehicle',
-      keyField,
-      keyValue,
-      data: { [keyField]: keyValue }
-    });
   }
 };
 
-// ─── REPAIRS CRUD (SYNC TO "FMS") ─────────────────────────────────────────────
+// ─── REPAIRS CRUD ─────────────────────────────────────────────
 export const getRepairs = async () => {
-  await delay();
   return load(KEYS.REPAIRS);
 };
-
-// Maps a claim record to the exact "If Accident / Insurance Claims" sheet headers:
-// - Columns A:F (Cols 1 to 6): Incident info
-// - Col G (Planned) & Col I (Delay) are formula-driven and must never be touched.
-// - Col H (Actual) is set only when process claim form is submitted.
-export const claimToSheetRow = (item) => ({
-  'Claim No.': item.claimNo || '',
-  'Repair No.': item.repairNo || '',
-  'Vehicle ID': item.vehicleId || '',
-  'Car Name': item.vehicleName || item.carName || '',
-  'Date of Accident': item.dateOfAccident || '',
-  'Type Of Claim': item.typeOfClaim || 'Own Damage',
-  'Claim Mode': item.claimMode || 'Cashless Claim (Network Garage)',
-  'Expected Settlement Date': item.expectedSettlementDate || '',
-  'Settlement Date': item.claimSettlementDate || '',
-  'Stage 1 Completed': item.stage1Completed ? 'Yes' : 'No',
-  'Stage 2 Completed': item.stage2Completed ? 'Yes' : 'No',
-  'Stage 3 Completed': item.stage3Completed ? 'Yes' : 'No',
-});
 
 // ─── AUTOMATICALLY SYNC REPAIR WITH ACCIDENT CLAIM ───────────────────────────
 export const autoSyncRepairClaim = async (repairItem) => {
@@ -1308,13 +310,6 @@ export const autoSyncRepairClaim = async (repairItem) => {
     allClaims[idx] = updated;
     save(KEYS.CLAIMS, allClaims);
 
-    await sendToSheet({
-      action: 'update',
-      sheetName: 'If Accident / Insurance Claims',
-      keyField: 'Claim No.',
-      keyValue: existingClaim.claimNo,
-      data: claimToSheetRow(updated)
-    });
     return updated;
   } else {
     // Auto-create new claim
@@ -1364,14 +359,6 @@ export const autoSyncRepairClaim = async (repairItem) => {
     allClaims.push(newClaim);
     save(KEYS.CLAIMS, allClaims);
 
-    await sendToSheet({
-      action: 'add',
-      sheetName: 'If Accident / Insurance Claims',
-      data: {
-        'Timestamp': now,
-        ...claimToSheetRow(newClaim),
-      }
-    });
     return newClaim;
   }
 };
@@ -1404,8 +391,6 @@ export const addRepair = async (repair) => {
   all.push(item);
   save(KEYS.REPAIRS, all);
 
-  const payload = mapRepairToSheet(item);
-  await sendToSheet({ action: 'add', sheetName: 'FMS', data: payload });
 
   // If Insurance to be claimed is Yes, automatically create & sync to If Accident / Insurance Claims!
   if (item.insuranceToBeClaimed === 'Yes') {
@@ -1423,14 +408,6 @@ export const updateRepair = async (repairNo, updates) => {
   all[idx] = { ...all[idx], ...updates, updatedAt: now };
   save(KEYS.REPAIRS, all);
 
-  const payload = mapRepairToSheet(all[idx]);
-  await sendToSheet({
-    action: 'update',
-    sheetName: 'FMS',
-    keyField: 'Car Repair No.',
-    keyValue: repairNo,
-    data: payload
-  });
 
   // If Insurance to be claimed is Yes, ensure claim is synced to If Accident / Insurance Claims!
   if (all[idx].insuranceToBeClaimed === 'Yes') {
@@ -1452,18 +429,10 @@ export const deleteRepair = async (repairNo) => {
   const pays = load(KEYS.PAYMENTS).filter(p => p.repairNo !== repairNo);
   save(KEYS.PAYMENTS, pays);
 
-  await sendToSheet({
-    action: 'delete',
-    sheetName: 'FMS',
-    keyField: 'Car Repair No.',
-    keyValue: repairNo,
-    data: { 'Car Repair No.': repairNo }
-  });
 };
 
 // ─── CLAIMS CRUD ──────────────────────────────────────────────────────────────
 export const getClaims = async () => {
-  await delay();
   await syncPendingRepairClaims();
   return load(KEYS.CLAIMS);
 };
@@ -1481,11 +450,6 @@ export const addClaim = async (claim) => {
   };
   all.push(item);
   save(KEYS.CLAIMS, all);
-  await sendToSheet({
-    action: 'add',
-    sheetName: 'If Accident / Insurance Claims',
-    data: { 'Timestamp': now, ...claimToSheetRow(item) },
-  });
   return item;
 };
 
@@ -1496,18 +460,6 @@ export const updateClaim = async (claimNo, updates) => {
   all[idx] = { ...all[idx], ...updates, updatedAt: createTimestamp() };
   save(KEYS.CLAIMS, all);
 
-  const sheetData = claimToSheetRow(all[idx]);
-  if (all[idx].actual) {
-    sheetData['Actual'] = all[idx].actual;
-  }
-
-  await sendToSheet({
-    action: 'update',
-    sheetName: 'If Accident / Insurance Claims',
-    keyField: 'Claim No.',
-    keyValue: claimNo,
-    data: sheetData,
-  });
   return all[idx];
 };
 
@@ -1525,118 +477,21 @@ export const processAccidentClaim = async (claimNo, processData) => {
   };
   save(KEYS.CLAIMS, all);
 
-  const sheetData = {
-    ...claimToSheetRow(all[idx]),
-    'Actual': now,
-    // Process Claim Details columns (matching sheet headers shown in image)
-    'Policy No.': all[idx].policyNo || '',
-    'Insurance Company': all[idx].insuranceCompany || '',
-    'Insurance Comp': all[idx].insuranceCompany || '',
-    'Estimated Claim Amount': all[idx].estimatedClaimAmount || '',
-    'Estimated Claim': all[idx].estimatedClaimAmount || '',
-    'Estimated Claim Amount (₹)': all[idx].estimatedClaimAmount || '',
-    'Type Of Claim': all[idx].typeOfClaim || 'Own Damage',
-    'Claim Mode': all[idx].claimMode || 'Cashless Claim (Network Garage)',
-    'Expected Settlement Date': all[idx].expectedSettlementDate || '',
-    'Policy Validity': all[idx].policyValidity || '',
-    'FIR Required?': all[idx].firRequired || 'No',
-    'FIR Required': all[idx].firRequired || 'No',
-    'Survey': all[idx].surveyStatus || 'Pending',
-    'Survey Status': all[idx].surveyStatus || 'Pending',
-    'Claim Status': all[idx].claimStatus || 'Claim Under Process',
-    'Claim Intimated Date': all[idx].claimIntimatedDate || '',
-    'Claim Intimated': all[idx].claimIntimatedDate || '',
-    'Claim Intimation No.': all[idx].claimIntimationNo || '',
-    'Claim Intimation': all[idx].claimIntimationNo || '',
-    'Survey Date': all[idx].surveyDate || '',
-    'Settlement Date': all[idx].claimSettlementDate || '',
-    'Accident Photos': typeof all[idx].accidentPhotos === 'string' ? all[idx].accidentPhotos : (all[idx].accidentPhotos?.url || ''),
-    'Accident Photo': typeof all[idx].accidentPhotos === 'string' ? all[idx].accidentPhotos : (all[idx].accidentPhotos?.url || ''),
-    'Police Report': typeof all[idx].policeReport === 'string' ? all[idx].policeReport : (all[idx].policeReport?.url || ''),
-    'Other Documents': typeof all[idx].otherDocuments === 'string' ? all[idx].otherDocuments : (all[idx].otherDocuments?.url || ''),
-    'Other Document': typeof all[idx].otherDocuments === 'string' ? all[idx].otherDocuments : (all[idx].otherDocuments?.url || ''),
-    'FIR Copy': typeof all[idx].firCopy === 'string' ? all[idx].firCopy : (all[idx].firCopy?.url || ''),
-    'Surveyor Name': all[idx].surveyorName || '',
-    'Surveyor Mobile No.': all[idx].surveyorMobileNo || '',
-    'Claim Approved Amount': all[idx].claimApprovedAmount || '',
-    'Claim Rejected Reason': all[idx].claimRejectedReason || '',
-    'Remarks': all[idx].remarks || ''
-  };
-
-  await sendToSheet({
-    action: 'update',
-    sheetName: 'If Accident / Insurance Claims',
-    keyField: 'Claim No.',
-    keyValue: claimNo,
-    data: sheetData,
-  });
   return all[idx];
 };
 
 export const deleteClaim = async (claimNo) => {
   const all = load(KEYS.CLAIMS).filter(c => c.claimNo !== claimNo);
   save(KEYS.CLAIMS, all);
-  await sendToSheet({
-    action: 'delete',
-    sheetName: 'If Accident / Insurance Claims',
-    keyField: 'Claim No.',
-    keyValue: claimNo,
-    data: { 'Claim No.': claimNo }
-  });
 };
 
 // ─── VENDOR OFFERS & MASTER REPAIR TYPES ─────────────────────────────
-export const getMasterRepairTypes = async () => {
-  const DEFAULT_TYPES = [
-    'Tyre Change', 'Regular Maintainance', 'Body Repair', 'Major Repair',
-    'Denting', 'Painting', 'Mechanical', 'Electrical', 'AC Servicing', 'General Checkup'
-  ];
+export const getMasterRepairTypes = async () => MASTER_REPAIR_TYPES;
 
-  try {
-    const remote = await fetchFromSheet('get_Master', 'Master');
-    if (Array.isArray(remote) && remote.length > 0) {
-      const types = remote
-        .map(r => r['Types Of Repair'] || r['Types of Repair'] || r.typesOfRepair)
-        .filter(Boolean)
-        .map(t => String(t).trim())
-        .filter(t => t.length > 0 && t !== '.');
-      if (types.length > 0) {
-        return [...new Set(types)];
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch Master repair types from sheet, using defaults:', err);
-  }
-  return DEFAULT_TYPES;
-};
+export const getMasterFirmNames = async () => MASTER_FIRM_NAMES;
 
-export const getMasterFirmNames = async () => {
-  const DEFAULT_FIRMS = [
-    'Passary Minerals Ltd',
-    'Passary Progressive Pvt Ltd',
-    'Passary Refractories Ltd'
-  ];
-
-  try {
-    const remote = await fetchFromSheet('get_Master', 'Master');
-    if (Array.isArray(remote) && remote.length > 0) {
-      const firms = remote
-        .map(r => r['Firm Name'] || r['Firm name'] || r['firmName'] || r['FirmName'] || r['Firm'] || r['FIRM NAME'])
-        .filter(Boolean)
-        .map(t => String(t).trim())
-        .filter(t => t.length > 0 && t !== '.' && t.toLowerCase() !== 'firm name');
-      if (firms.length > 0) {
-        return [...new Set(firms)];
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch Master firm names from sheet, using defaults:', err);
-  }
-  return DEFAULT_FIRMS;
-};
 
 export const getVendorOffers = async () => {
-  await delay();
   return load(KEYS.VENDOR_OFFERS);
 };
 
@@ -1653,21 +508,6 @@ export const addVendorOffer = async (offer) => {
   all.push(item);
   save(KEYS.VENDOR_OFFERS, all);
 
-  // Send to FMS sheet (Col K: Actual 1, Col M: Photo, Col N: Insurance, Col O: Types, Col P: Garage Name, Col Q: Expected Repair Completion Date)
-  await sendToSheet({
-    action: 'submit_vendor_offer',
-    sheetName: 'FMS',
-    keyValue: item.repairNo,
-    data: {
-      'Car Repair No.': item.repairNo,
-      'Actual 1': actualDate,
-      'Photo Of Offer': item.photoOfOffer,
-      'Insurance': item.insurance,
-      'Types Of Repair': item.typesOfRepair,
-      'Garage Name': item.garageName || item.garage || '',
-      'Expected Repair Completion Date': item.expectedCompletionDate || '',
-    }
-  });
 
   // Also update repair status
   const repairs = load(KEYS.REPAIRS);
@@ -1696,18 +536,6 @@ export const approveVendorOffer = async (id, remarks = '') => {
   };
   save(KEYS.VENDOR_OFFERS, all);
 
-  // Send to FMS sheet: Col Q (Actual 2)
-  await sendToSheet({
-    action: 'submit_approval',
-    sheetName: 'FMS',
-    keyValue: all[idx].repairNo,
-    data: {
-      'Car Repair No.': all[idx].repairNo,
-      'Actual 2': now,
-      'approvalStatus': 'Approved',
-      'remarks': remarks
-    }
-  });
 
   // Update repair status to Approved
   const repairs = load(KEYS.REPAIRS);
@@ -1728,13 +556,11 @@ export const rejectVendorOffer = async (id, reason) => {
   const now = createTimestamp();
   all[idx] = { ...all[idx], approvalStatus: 'Rejected', rejectionReason: reason, rejectedAt: now };
   save(KEYS.VENDOR_OFFERS, all);
-  sendToSheet({ action: 'update', sheetName: 'Vendor_Offers', keyField: 'id', keyValue: id, data: all[idx] });
   return all[idx];
 };
 
 // ─── DELIVERY PLANNING ────────────────────────────────────────────────────────
 export const getDeliveryPlanning = async () => {
-  await delay();
   return load(KEYS.DELIVERY_PLANNING);
 };
 
@@ -1744,7 +570,6 @@ export const addDeliveryPlanning = async (dp) => {
   const item = { ...dp, timestamp: now, createdAt: now };
   all.push(item);
   save(KEYS.DELIVERY_PLANNING, all);
-  await sendToSheet({ action: 'add', sheetName: 'Delivery_Planning', data: item });
 
   // Create delivery record
   const deliveries = load(KEYS.DELIVERIES);
@@ -1753,7 +578,6 @@ export const addDeliveryPlanning = async (dp) => {
     const newDel = { ...dp, deliveryStatus: 'Delivery Pending', id: `del_${Date.now()}`, timestamp: now, createdAt: now };
     deliveries.push(newDel);
     save(KEYS.DELIVERIES, deliveries);
-    sendToSheet({ action: 'add', sheetName: 'Delivery_Car', data: newDel });
   }
 
   // Update repair status
@@ -1763,20 +587,12 @@ export const addDeliveryPlanning = async (dp) => {
     repairs[ri].repairStatus = 'Delivery Planned';
     repairs[ri].updatedAt = now;
     save(KEYS.REPAIRS, repairs);
-    sendToSheet({
-      action: 'update',
-      sheetName: 'FMS',
-      keyField: 'Car Repair No.',
-      keyValue: dp.repairNo,
-      data: mapRepairToSheet(repairs[ri])
-    });
   }
   return item;
 };
 
 // ─── DELIVERIES ───────────────────────────────────────────────────────────────
 export const getDeliveries = async () => {
-  await delay();
   return load(KEYS.DELIVERIES);
 };
 
@@ -1817,27 +633,6 @@ export const submitDelivery = async (deliveryInput) => {
   
   save(KEYS.DELIVERIES, deliveries);
 
-  // Send to FMS sheet (Col V: Actual 3 through Col AF: Bill Image)
-  await sendToSheet({
-    action: 'submit_delivery',
-    sheetName: 'FMS',
-    keyValue: repairNo,
-    data: {
-      'Car Repair No.': repairNo,
-      'Actual 3': now,
-      'Date Of Vechile Received Back': delRecord.dateVehicleReceived || '',
-      'Date of Vehicle Received Back': delRecord.dateVehicleReceived || '',
-      'K.M at The Time Of Repair': delRecord.kmAtTimeOfRepair || '',
-      'Reapir Work Done': delRecord.repairWorkDone || '',
-      'Repair Work Done': delRecord.repairWorkDone || '',
-      'Parts Amount': delRecord.partsAmount || '',
-      'Service Amount': delRecord.serviceAmount || '',
-      'Insurance Claimed (If Any)': delRecord.insuranceClaimed || 'No',
-      'Insurance Amount ( If Claimed )': delRecord.insuranceAmount || '',
-      'Bill Amount': delRecord.billAmount || '',
-      'Bill Image': delRecord.billImage || '',
-    }
-  });
 
   // Create payment record
   const payments = load(KEYS.PAYMENTS);
@@ -1860,7 +655,6 @@ export const submitDelivery = async (deliveryInput) => {
     };
     payments.push(newPay);
     save(KEYS.PAYMENTS, payments);
-    sendToSheet({ action: 'add', sheetName: 'Payment', data: newPay });
   }
 
   // Update repair status
@@ -1879,18 +673,31 @@ export const submitDelivery = async (deliveryInput) => {
 
 // ─── PAYMENTS ─────────────────────────────────────────────────────────────────
 export const getPayments = async () => {
-  await delay();
   return load(KEYS.PAYMENTS);
 };
 
-export const updatePaymentStatus = async (repairNo, status) => {
+export const updatePaymentStatus = async (repairNo, status, details = {}) => {
   const payments = load(KEYS.PAYMENTS);
-  const idx = payments.findIndex(p => p.repairNo === repairNo);
-  if (idx === -1) throw new Error('Payment not found');
+  let idx = payments.findIndex(p => p.repairNo === repairNo);
   const now = createTimestamp();
-  payments[idx] = { ...payments[idx], paymentStatus: status, updatedAt: now };
+  if (idx === -1) {
+    payments.push({ id: `pay_${Date.now()}`, repairNo, ...details, timestamp: now, createdAt: now });
+    idx = payments.length - 1;
+  }
+  const completed = status === 'Payment Completed';
+  payments[idx] = {
+    ...payments[idx],
+    ...details,
+    paymentStatus: status,
+    ...(completed ? {
+      paidAt: now,
+      paymentDate: payments[idx].paymentDate || today(),
+      paidAmount: payments[idx].billAmount || details.billAmount || '0',
+      paymentMethod: payments[idx].paymentMethod || 'Bank Transfer',
+    } : {}),
+    updatedAt: now,
+  };
   save(KEYS.PAYMENTS, payments);
-  await sendToSheet({ action: 'update', sheetName: 'Payment', keyField: 'repairNo', keyValue: repairNo, data: payments[idx] });
 
   if (status === 'Payment Completed') {
     const repairs = load(KEYS.REPAIRS);
@@ -1899,92 +706,13 @@ export const updatePaymentStatus = async (repairNo, status) => {
       repairs[ri].repairStatus = 'Payment Completed';
       repairs[ri].updatedAt = now;
       save(KEYS.REPAIRS, repairs);
-      sendToSheet({
-        action: 'update',
-        sheetName: 'FMS',
-        keyField: 'Car Repair No.',
-        keyValue: repairNo,
-        data: mapRepairToSheet(repairs[ri])
-      });
     }
   }
   return payments[idx];
 };
 
-// ─── MAPPER FOR "Challan Details" SHEET ───────────────────────────────────────
-export const mapChallanToSheet = (ch) => ({
-  "Timestamp": ch.timestamp || ch.createdAt || createTimestamp(),
-  "Challan ID": ch.id || '',
-  "Challan No": ch.challanNo || '',
-  "Vehicle ID": ch.vehicleId || '',
-  "Car Name": ch.carName || '',
-  "Firm Name": ch.firmName || '',
-  "Reg. No": ch.registrationNo || '',
-  "Fuel": ch.fuelType || '',
-  "Owner": ch.owner || '',
-  "Date of Challan": ch.dateOfChallan || '',
-  "Reason of Challan": ch.reasonOfChallan || '',
-  "Who is Driver": ch.driverName || '',
-  "Driver Mobile": ch.driverMobile || '',
-  "Challan Amount": ch.challanAmount || '',
-  "Location / Authority": ch.location || '',
-  "Payment Status": ch.paymentStatus || 'Pending',
-  "Payment Date": ch.paymentDate || '',
-  "Transaction ID": ch.transactionId || '',
-  "Challan Document": typeof ch.documentUrl === 'string' ? ch.documentUrl : (ch.documentUrl?.url || ''),
-  "Remarks": ch.remarks || '',
-});
-
-export const mapSheetRowToChallan = (row, index) => {
-  if (!row || typeof row !== 'object') return null;
-  const get = (...keys) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
-        return String(row[k]).trim();
-      }
-      const target = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [rk, rv] of Object.entries(row)) {
-        if (rk.toLowerCase().replace(/[^a-z0-9]/g, '') === target && rv !== undefined && rv !== null && String(rv).trim() !== '') {
-          return String(rv).trim();
-        }
-      }
-    }
-    return '';
-  };
-
-  const challanNo = get('Challan No', 'challanNo', 'CHALLAN NO', 'Challan Number');
-  const vehicleId = get('Vehicle ID', 'vehicleId', 'VEHICLE ID');
-  const regNo = get('Reg. No', 'Reg No', 'registrationNo', 'REGISTRATION NO.');
-  if (!challanNo && !vehicleId && !regNo) return null;
-
-  return {
-    id: get('Challan ID', 'id') || `CH-${Date.now()}-${index}`,
-    challanNo: challanNo || `CH-${String(index + 1).padStart(4, '0')}`,
-    vehicleId: vehicleId || '',
-    carName: get('Car Name', 'carName', 'NAME OF CAR / Vehicle'),
-    firmName: get('Firm Name', 'firmName'),
-    registrationNo: regNo,
-    fuelType: get('Fuel', 'fuelType', 'FUEL TYPE'),
-    owner: get('Owner', 'owner', 'Name Of The Owner'),
-    dateOfChallan: get('Date of Challan', 'dateOfChallan', 'date'),
-    reasonOfChallan: get('Reason of Challan', 'reasonOfChallan', 'reason'),
-    driverName: get('Who is Driver', 'driverName', 'driver'),
-    driverMobile: get('Driver Mobile', 'driverMobile'),
-    challanAmount: get('Challan Amount', 'challanAmount', 'amount'),
-    location: get('Location / Authority', 'location', 'authority'),
-    paymentStatus: get('Payment Status', 'paymentStatus') || 'Pending',
-    paymentDate: get('Payment Date', 'paymentDate'),
-    transactionId: get('Transaction ID', 'transactionId'),
-    documentUrl: get('Challan Document', 'documentUrl', 'document'),
-    remarks: get('Remarks', 'remarks'),
-    timestamp: get('Timestamp', 'timestamp') || createTimestamp(),
-    createdAt: get('Timestamp', 'createdAt') || createTimestamp(),
-  };
-};
-
 // ─── CHALLANS CRUD ────────────────────────────────────────────────────────────
 export const getChallans = async () => {
-  await delay();
   return load(KEYS.CHALLANS);
 };
 
@@ -2002,11 +730,6 @@ export const addChallan = async (challanData) => {
   challans.push(newChallan);
   save(KEYS.CHALLANS, challans);
 
-  await sendToSheet({
-    action: 'add',
-    sheetName: 'Challan Details',
-    data: mapChallanToSheet(newChallan)
-  });
 
   return newChallan;
 };
@@ -2019,13 +742,6 @@ export const updateChallan = async (id, updates) => {
   challans[idx] = { ...challans[idx], ...updates, updatedAt: now };
   save(KEYS.CHALLANS, challans);
 
-  await sendToSheet({
-    action: 'update',
-    sheetName: 'Challan Details',
-    keyField: 'Challan ID',
-    keyValue: id,
-    data: mapChallanToSheet(challans[idx])
-  });
 
   return challans[idx];
 };
@@ -2038,90 +754,12 @@ export const deleteChallan = async (id) => {
 
   if (target) {
     const keyVal = target.id || id;
-    await sendToSheet({
-      action: 'delete',
-      sheetName: 'Challan Details',
-      keyField: 'Challan ID',
-      keyValue: keyVal,
-      data: { 'Challan ID': keyVal }
-    });
   }
   return true;
 };
 
-// ─── MAPPER FOR "Fastag Details" SHEET ────────────────────────────────────────
-export const mapFastagToSheet = (ft) => ({
-  "Timestamp": ft.timestamp || ft.createdAt || createTimestamp(),
-  "Vehicle ID": ft.vehicleId || '',
-  "Car Name": ft.carName || '',
-  "Firm Name": ft.firmName || '',
-  "Reg. No": ft.registrationNo || '',
-  "Fuel": ft.fuelType || '',
-  "Owner": ft.owner || '',
-  "Fastag Status": ft.fastagStatus || 'Active',
-  "Tag ID": ft.tagId || '',
-  "Issuing Bank": ft.bankName || '',
-  "Vehicle Class": ft.vehicleClass || 'VC4',
-  "Linked Mobile": ft.linkedMobile || '',
-  "Wallet ID": ft.walletId || '',
-  "Balance": ft.balance || '0',
-  "Low Balance Limit": ft.lowBalanceLimit || '200',
-  "Activation Date": ft.activationDate || '',
-  "Expiry Date": ft.expiryDate || '',
-  "Barcode Document": typeof ft.documentUrl === 'string' ? ft.documentUrl : (ft.documentUrl?.url || ''),
-  "Remarks": ft.remarks || '',
-});
-
-export const mapSheetRowToFastag = (row, index) => {
-  if (!row || typeof row !== 'object') return null;
-  const get = (...keys) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
-        return String(row[k]).trim();
-      }
-      const target = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-      for (const [rk, rv] of Object.entries(row)) {
-        if (rk.toLowerCase().replace(/[^a-z0-9]/g, '') === target && rv !== undefined && rv !== null && String(rv).trim() !== '') {
-          return String(rv).trim();
-        }
-      }
-    }
-    return '';
-  };
-
-  const vehicleId = get('Vehicle ID', 'vehicleId', 'VEHICLE ID');
-  const regNo = get('Reg. No', 'Reg No', 'registrationNo', 'REGISTRATION NO.');
-  const tagId = get('Tag ID', 'tagId', 'TAG ID');
-  if (!vehicleId && !regNo && !tagId) return null;
-
-  return {
-    id: get('id') || `FT-${vehicleId || regNo || index}`,
-    vehicleId: vehicleId || '',
-    carName: get('Car Name', 'carName', 'NAME OF CAR / Vehicle'),
-    firmName: get('Firm Name', 'firmName'),
-    registrationNo: regNo,
-    fuelType: get('Fuel', 'fuelType', 'FUEL TYPE'),
-    owner: get('Owner', 'owner', 'Name Of The Owner'),
-    fastagStatus: get('Fastag Status', 'fastagStatus', 'status') || 'Active',
-    tagId: tagId || '',
-    bankName: get('Issuing Bank', 'bankName', 'bank'),
-    vehicleClass: get('Vehicle Class', 'vehicleClass') || 'VC4',
-    linkedMobile: get('Linked Mobile', 'linkedMobile', 'mobile'),
-    walletId: get('Wallet ID', 'walletId'),
-    balance: get('Balance', 'balance') || '0',
-    lowBalanceLimit: get('Low Balance Limit', 'lowBalanceLimit') || '200',
-    activationDate: get('Activation Date', 'activationDate'),
-    expiryDate: get('Expiry Date', 'expiryDate'),
-    documentUrl: get('Barcode Document', 'documentUrl', 'document'),
-    remarks: get('Remarks', 'remarks'),
-    timestamp: get('Timestamp', 'timestamp') || createTimestamp(),
-    createdAt: get('Timestamp', 'createdAt') || createTimestamp(),
-  };
-};
-
 // ─── FASTAG CRUD ──────────────────────────────────────────────────────────────
 export const getFastags = async () => {
-  await delay();
   return load(KEYS.FASTAGS);
 };
 
@@ -2141,13 +779,6 @@ export const saveFastag = async (fastagData) => {
     fastags[idx] = savedRecord;
     save(KEYS.FASTAGS, fastags);
 
-    await sendToSheet({
-      action: 'update',
-      sheetName: 'Fastag Details',
-      keyField: 'Vehicle ID',
-      keyValue: savedRecord.vehicleId,
-      data: mapFastagToSheet(savedRecord)
-    });
   } else {
     savedRecord = {
       ...fastagData,
@@ -2159,11 +790,6 @@ export const saveFastag = async (fastagData) => {
     fastags.push(savedRecord);
     save(KEYS.FASTAGS, fastags);
 
-    await sendToSheet({
-      action: 'add',
-      sheetName: 'Fastag Details',
-      data: mapFastagToSheet(savedRecord)
-    });
   }
 
   return savedRecord;
@@ -2177,88 +803,201 @@ export const deleteFastag = async (vehicleId) => {
 
   if (target) {
     const keyVal = target.vehicleId || vehicleId;
-    await sendToSheet({
-      action: 'delete',
-      sheetName: 'Fastag Details',
-      keyField: 'Vehicle ID',
-      keyValue: keyVal,
-      data: { 'Vehicle ID': keyVal }
-    });
   }
   return true;
 };
 
-// ─── LOGIN PAGE / USER MANAGEMENT LIVE SYNC ─────────────────────────────────
-export const pushUsersToSheet = async (usersList = null) => {
-  const users = usersList || load(KEYS.USERS);
-  if (!users || users.length === 0) return false;
+// ─── DAILY TRIPS ──────────────────────────────────────────────────────────────
+const nextNo = (list, field, prefix) => {
+  const max = list.reduce((m, item) => {
+    const n = parseInt(String(item[field] || '').replace(`${prefix}-`, ''), 10);
+    return isNaN(n) ? m : Math.max(m, n);
+  }, 0);
+  return `${prefix}-${String(max + 1).padStart(4, '0')}`;
+};
 
-  let allSuccess = true;
-  for (const user of users) {
-    const mapped = mapUserToSheet(user);
-    const ok = await sendToSheet({
-      action: 'update',
-      sheetName: 'Login Page',
-      keyField: 'User',
-      keyValue: user.email,
-      data: mapped
+const withTripDistance = (trip) => {
+  const start = Number(trip.startKm);
+  const end = Number(trip.endKm);
+  const distance = trip.startKm !== '' && trip.endKm !== '' && !isNaN(start) && !isNaN(end) && end >= start ? String(end - start) : (trip.distance || '');
+  return { ...trip, distance };
+};
+
+export const getTrips = async () => {
+  return load(KEYS.TRIPS);
+};
+
+export const addTrip = async (trip) => {
+  const all = load(KEYS.TRIPS);
+  const now = createTimestamp();
+  const item = withTripDistance({
+    ...trip,
+    id: generateId(),
+    tripNo: nextNo(all, 'tripNo', 'TRP'),
+    status: trip.status || 'Scheduled',
+    timestamp: now,
+    createdAt: now,
+  });
+  all.push(item);
+  save(KEYS.TRIPS, all);
+  return item;
+};
+
+export const updateTrip = async (id, updates) => {
+  const all = load(KEYS.TRIPS);
+  const idx = all.findIndex(t => t.id === id);
+  if (idx === -1) throw new Error('Trip not found');
+  all[idx] = withTripDistance({ ...all[idx], ...updates, updatedAt: createTimestamp() });
+  save(KEYS.TRIPS, all);
+  return all[idx];
+};
+
+export const deleteTrip = async (id) => {
+  save(KEYS.TRIPS, load(KEYS.TRIPS).filter(t => t.id !== id));
+};
+
+// Latest known odometer reading of a vehicle (from trips & fuel entries)
+export const getLastOdometer = (vehicleId) => {
+  const readings = [
+    ...load(KEYS.TRIPS).filter(t => t.vehicleId === vehicleId).flatMap(t => [Number(t.endKm), Number(t.startKm)]),
+    ...load(KEYS.FUELS).filter(f => f.vehicleId === vehicleId).map(f => Number(f.odometer)),
+  ].filter(n => !isNaN(n) && n > 0);
+  return readings.length ? Math.max(...readings) : '';
+};
+
+// ─── FUEL ENTRIES ─────────────────────────────────────────────────────────────
+const withFuelAmount = (fuel) => {
+  const qty = Number(fuel.quantity);
+  const rate = Number(fuel.rate);
+  const amount = fuel.amount !== undefined && fuel.amount !== '' ? fuel.amount : (!isNaN(qty) && !isNaN(rate) ? String(Math.round(qty * rate * 100) / 100) : '');
+  return { ...fuel, amount };
+};
+
+export const getFuels = async () => {
+  return load(KEYS.FUELS);
+};
+
+export const addFuel = async (fuel) => {
+  const all = load(KEYS.FUELS);
+  const now = createTimestamp();
+  const item = withFuelAmount({
+    ...fuel,
+    id: generateId(),
+    fuelNo: nextNo(all, 'fuelNo', 'FUEL'),
+    timestamp: now,
+    createdAt: now,
+  });
+  all.push(item);
+  save(KEYS.FUELS, all);
+  return item;
+};
+
+export const updateFuel = async (id, updates) => {
+  const all = load(KEYS.FUELS);
+  const idx = all.findIndex(f => f.id === id);
+  if (idx === -1) throw new Error('Fuel entry not found');
+  all[idx] = withFuelAmount({ ...all[idx], ...updates, updatedAt: createTimestamp() });
+  save(KEYS.FUELS, all);
+  return all[idx];
+};
+
+export const deleteFuel = async (id) => {
+  save(KEYS.FUELS, load(KEYS.FUELS).filter(f => f.id !== id));
+};
+
+// Adds `runKm` and `mileage` (km per unit) to each fuel entry.
+// Run KM = current reading − last reading (from the fuel slip, or the previous fill of the same vehicle).
+export const withMileage = (fuels) => {
+  const byVehicle = {};
+  fuels.forEach(f => { (byVehicle[f.vehicleId] = byVehicle[f.vehicleId] || []).push(f); });
+  const calc = {};
+  Object.values(byVehicle).forEach(list => {
+    const sorted = [...list].sort((a, b) => Number(a.odometer) - Number(b.odometer));
+    sorted.forEach((f, i) => {
+      const last = f.lastKm !== undefined && f.lastKm !== '' ? Number(f.lastKm) : (i > 0 ? Number(sorted[i - 1].odometer) : NaN);
+      const km = Number(f.odometer) - last;
+      const qty = Number(f.quantity);
+      calc[f.id] = km > 0 && qty > 0
+        ? { runKm: km, mileage: Math.round((km / qty) * 100) / 100 }
+        : { runKm: null, mileage: null };
     });
-    if (!ok) allSuccess = false;
-  }
-  return allSuccess;
-};
-
-export const addUserToSheet = async (user) => {
-  return await sendToSheet({
-    action: 'add',
-    sheetName: 'Login Page',
-    data: mapUserToSheet(user)
   });
+  return fuels.map(f => ({ ...f, ...(calc[f.id] || { runKm: null, mileage: null }) }));
 };
 
-export const updateUserInSheet = async (user) => {
-  return await sendToSheet({
-    action: 'update',
-    sheetName: 'Login Page',
-    keyField: 'User',
-    keyValue: user.email,
-    data: mapUserToSheet(user)
+// Overall vehicle average = total run KM / total quantity (only fills with a valid run KM)
+export const vehicleAverage = (fuelsWithMileage) => {
+  const valid = fuelsWithMileage.filter(f => f.runKm > 0 && Number(f.quantity) > 0);
+  const km = valid.reduce((s, f) => s + f.runKm, 0);
+  const qty = valid.reduce((s, f) => s + Number(f.quantity), 0);
+  return qty > 0 ? Math.round((km / qty) * 100) / 100 : null;
+};
+
+// ─── FUEL REQUEST SLIPS ───────────────────────────────────────────────────────
+// Step 1: a fuel request issues a slip (Pending).
+// Step 2: the slip is filled (creates a fuel entry) or marked Not Filled.
+export const getFuelSlips = async () => {
+  return load(KEYS.FUEL_SLIPS);
+};
+
+export const getFillingLocations = () => {
+  const used = [...load(KEYS.FUEL_SLIPS).map(s => s.fillingLocation), ...load(KEYS.FUELS).map(f => f.pumpName)];
+  return [...new Set([...MASTER_FILLING_LOCATIONS, ...used].filter(Boolean).map(v => String(v).trim()))];
+};
+
+export const addFuelSlip = async (request) => {
+  const all = load(KEYS.FUEL_SLIPS);
+  const now = createTimestamp();
+  const maxNo = all.reduce((m, sl) => Math.max(m, Number(sl.slipNo) || 0), 1000);
+  const item = {
+    ...request,
+    id: generateId(),
+    slipNo: String(maxNo + 1),
+    issuedAt: now,
+    status: 'Pending',
+    timestamp: now,
+    createdAt: now,
+  };
+  all.push(item);
+  save(KEYS.FUEL_SLIPS, all);
+  return item;
+};
+
+export const fillFuelSlip = async (slipNo, fillData) => {
+  const slips = load(KEYS.FUEL_SLIPS);
+  const idx = slips.findIndex(sl => sl.slipNo === slipNo);
+  if (idx === -1) throw new Error('Slip not found');
+  if (slips[idx].status !== 'Pending') throw new Error(`Slip ${slipNo} is already ${slips[idx].status}`);
+  const slip = slips[idx];
+  const fuel = await addFuel({
+    vehicleId: slip.vehicleId,
+    carName: slip.carName,
+    registrationNo: slip.registrationNo,
+    pumpName: slip.fillingLocation,
+    filledBy: slip.issuedTo,
+    lastKm: slip.lastKm,
+    slipNo,
+    fullTank: 'Yes',
+    ...fillData,
   });
+  const now = createTimestamp();
+  const fresh = load(KEYS.FUEL_SLIPS);
+  const i = fresh.findIndex(sl => sl.slipNo === slipNo);
+  fresh[i] = { ...fresh[i], status: 'Filled', fuelNo: fuel.fuelNo, entryBy: fillData.entryBy || '', filledAt: now, updatedAt: now };
+  save(KEYS.FUEL_SLIPS, fresh);
+  return fuel;
 };
 
-export const deleteUserFromSheet = async (userEmail) => {
-  return await sendToSheet({
-    action: 'delete',
-    sheetName: 'Login Page',
-    keyField: 'User',
-    keyValue: userEmail,
-    data: { User: userEmail }
-  });
+export const markSlipNotFilled = async (slipNo, { entryBy = '', reason = '' } = {}) => {
+  const slips = load(KEYS.FUEL_SLIPS);
+  const idx = slips.findIndex(sl => sl.slipNo === slipNo);
+  if (idx === -1) throw new Error('Slip not found');
+  const now = createTimestamp();
+  slips[idx] = { ...slips[idx], status: 'Not Filled', entryBy, notFilledReason: reason, closedAt: now, updatedAt: now };
+  save(KEYS.FUEL_SLIPS, slips);
+  return slips[idx];
 };
 
-export const syncUsersFromSheet = async () => {
-  let remote = await fetchFromSheet('get_LoginPage', 'Login Page');
-  if (!remote || !Array.isArray(remote) || remote.length === 0) {
-    const all = await fetchFromSheet('getAll');
-    if (all && typeof all === 'object') {
-      const loginKey = Object.keys(all).find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '').includes('login'));
-      if (loginKey && Array.isArray(all[loginKey])) {
-        remote = all[loginKey];
-      }
-    }
-  }
-  if (Array.isArray(remote)) {
-    const mapped = remote.map(mapSheetRowToUser).filter(Boolean);
-    if (mapped.length > 0) {
-      localStorage.setItem(KEYS.USERS, JSON.stringify(mapped));
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('cms_users_updated', { detail: mapped }));
-        window.dispatchEvent(new CustomEvent('cms_datastore_updated'));
-      }
-      return mapped;
-    }
-  }
-  return null;
+export const deleteFuelSlip = async (slipNo) => {
+  save(KEYS.FUEL_SLIPS, load(KEYS.FUEL_SLIPS).filter(sl => sl.slipNo !== slipNo));
 };
-
-

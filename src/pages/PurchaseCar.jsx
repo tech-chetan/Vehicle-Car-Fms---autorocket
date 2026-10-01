@@ -6,8 +6,7 @@ import { getCars, addCar, updateCar, deleteCar, getInsurance, renewInsurance, ge
 import { generateVehicleId } from '../utils/idGenerator';
 import { formatDate, today, calcInsuranceRenewal, toInputDate, calcEmiDetails } from '../utils/dateUtils';
 import { validateForm, required, phone, positiveNumber } from '../utils/validators';
-import { FUEL_TYPES, ITEMS_PER_PAGE } from '../constants';
-import { uploadFileToDrive } from '../api/googleSheetsClient';
+import { FUEL_TYPES, VEHICLE_TYPES, ITEMS_PER_PAGE } from '../constants';
 import { useAuth, PAGE_KEYS } from '../context/AuthContext';
 import LoadingOverlay from '../components/ui/LoadingOverlay';
 import Badge from '../components/ui/Badge';
@@ -22,7 +21,7 @@ import { openDocument } from '../utils/fileUtils';
 
 const EMPTY_FORM = {
   firmName: '', carName: '', dateOfPurchase: '', modelNo: '', companyPurchasedFrom: '',
-  fuelType: '', registrationNo: '', chassisNo: '', engineNo: '',
+  fuelType: '', vehicleType: 'Car', registrationNo: '', chassisNo: '', engineNo: '',
   hypothecationBank: '', loanAmount: '', emiStartDate: '', lastEmiDate: '', dateOfReleaseHypothecation: '',
   totalEmis: '', paidEmis: '', paidEmiAmount: '', remainingLoanAmount: '',
   valueOfCar: '', emiAmount: '', insuranceAmount: '', rtoAmount: '',
@@ -302,18 +301,18 @@ const CarForm = ({ car, cars, onClose, onSaved }) => {
       }
 
       if (processedForm.copyOfInsurance?.url && processedForm.copyOfInsurance.url.startsWith('data:')) {
-        const driveUrl = await uploadFileToDrive(processedForm.copyOfInsurance.url, `${processedForm.registrationNo || 'car'}_Insurance`, processedForm.copyOfInsurance.type);
-        if (driveUrl) {
-          processedForm.copyOfInsurance = driveUrl;
+        const fileUrl = processedForm.copyOfInsurance.url;
+        if (fileUrl) {
+          processedForm.copyOfInsurance = fileUrl;
         }
       } else if (typeof processedForm.copyOfInsurance === 'object' && processedForm.copyOfInsurance?.url) {
         processedForm.copyOfInsurance = processedForm.copyOfInsurance.url;
       }
 
       if (processedForm.copyOfRegistration?.url && processedForm.copyOfRegistration.url.startsWith('data:')) {
-        const driveUrl = await uploadFileToDrive(processedForm.copyOfRegistration.url, `${processedForm.registrationNo || 'car'}_RC`, processedForm.copyOfRegistration.type);
-        if (driveUrl) {
-          processedForm.copyOfRegistration = driveUrl;
+        const fileUrl = processedForm.copyOfRegistration.url;
+        if (fileUrl) {
+          processedForm.copyOfRegistration = fileUrl;
         }
       } else if (typeof processedForm.copyOfRegistration === 'object' && processedForm.copyOfRegistration?.url) {
         processedForm.copyOfRegistration = processedForm.copyOfRegistration.url;
@@ -352,7 +351,7 @@ const CarForm = ({ car, cars, onClose, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} style={{ position: 'relative' }}>
-      <LoadingOverlay isVisible={saving} message={isEdit ? "Updating Vehicle in Google Sheet..." : "Saving Vehicle to Google Sheet..."} />
+      <LoadingOverlay isVisible={saving} message={isEdit ? "Updating Vehicle..." : "Saving Vehicle..."} />
       {isEdit && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderRadius: 12, background: '#ecfdf5', border: '1px solid #d1fae5', marginBottom: 24, fontSize: 13.5, color: '#059669', fontWeight: 700 }}>
           🚗 Vehicle ID: <span style={{ color: '#0f172a' }}>{car.vehicleId}</span>
@@ -395,6 +394,11 @@ const CarForm = ({ car, cars, onClose, onSaved }) => {
           <select className={`form-select ${errors.fuelType ? 'error' : ''}`} value={form.fuelType} onChange={e => set('fuelType', e.target.value)}>
             <option value="">Select fuel type</option>
             {FUEL_TYPES.map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Vehicle Type">
+          <select className="form-select" value={form.vehicleType || 'Car'} onChange={e => set('vehicleType', e.target.value)}>
+            {VEHICLE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </FormField>
         <FormField label="Registration No." required error={errors.registrationNo}>
@@ -1108,7 +1112,7 @@ const ViewCar = ({ car, insurance }) => {
   const fields = [
     ['Vehicle ID', car.vehicleId], ['Firm Name', car.firmName], ['Registration No.', car.registrationNo],
     ['Car Name', car.carName], ['Model No.', car.modelNo],
-    ['Fuel Type', car.fuelType], ['Purchase Date', formatDate(car.dateOfPurchase)],
+    ['Fuel Type', car.fuelType], ['Vehicle Type', car.vehicleType || 'Car'], ['Purchase Date', formatDate(car.dateOfPurchase)],
     ['Company Purchased From', car.companyPurchasedFrom], ['Chassis No.', car.chassisNo],
     ['Engine No.', car.engineNo], ['Hypothecation Bank', car.hypothecationBank],
     ['Last EMI Date', formatDate(car.lastEmiDate)], ['Release of Hypothecation', formatDate(car.dateOfReleaseHypothecation)],

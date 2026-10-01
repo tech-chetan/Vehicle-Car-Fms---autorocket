@@ -5,6 +5,12 @@ import { useAuth } from '../context/AuthContext';
 import { Lock, Mail, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 
+const DEMO_ACCOUNTS = [
+  { label: 'Admin', email: 'admin@vehicleapp.com', password: 'admin123' },
+  { label: 'Manager', email: 'manager@vehicleapp.com', password: 'manager123' },
+  { label: 'Viewer', email: 'viewer@vehicleapp.com', password: 'viewer123' },
+];
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -109,8 +115,8 @@ export default function Login() {
               marginBottom: 16,
             }}>
               <img
-                src="/passary-logo.png"
-                alt="Passary Logo"
+                src="/vehicle-app-logo.svg"
+                alt="Vehicle App Logo"
                 style={{ width: '100%', height: '100%', objectFit: 'contain' }}
               />
             </div>
@@ -122,7 +128,7 @@ export default function Login() {
               letterSpacing: -0.5,
               margin: 0,
             }}>
-              Passary <span style={{ color: '#059669' }}>Car System</span>
+              Vehicle <span style={{ color: '#059669' }}>App</span>
             </h1>
           </div>
 
@@ -150,7 +156,7 @@ export default function Login() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@passary.com"
+                  placeholder="name@vehicleapp.com"
                   autoComplete="email"
                   style={{
                     width: '100%',
@@ -281,6 +287,28 @@ export default function Login() {
               )}
             </button>
           </form>
+
+          {/* Demo accounts */}
+          <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px dashed #e2e8f0' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 10, textAlign: 'center' }}>
+              Demo Accounts (click to fill)
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+              {DEMO_ACCOUNTS.map(acc => (
+                <button
+                  key={acc.email}
+                  type="button"
+                  onClick={() => { setEmail(acc.email); setPassword(acc.password); }}
+                  style={{
+                    padding: '6px 14px', borderRadius: 999, border: '1.5px solid #d1fae5',
+                    background: '#ecfdf5', color: '#047857', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+                  }}
+                >
+                  {acc.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

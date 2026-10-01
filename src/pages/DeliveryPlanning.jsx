@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Truck, Plus, Search, Eye, X, Lock, Wrench, CreditCard, FileText } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { getRepairs, getVendorOffers, addDeliveryPlanning, getDeliveryPlanning, syncAllFromSheets, onStoreUpdate } from '../store/dataStore';
+import { getRepairs, getVendorOffers, addDeliveryPlanning, getDeliveryPlanning, onStoreUpdate } from '../store/dataStore';
 import { generateId } from '../utils/idGenerator';
 import { formatDate, today } from '../utils/dateUtils';
 import { validateForm, required } from '../utils/validators';
@@ -134,7 +134,6 @@ const DeliveryPlanning = () => {
     const [r, v, dp] = await Promise.all([getRepairs(), getVendorOffers(), getDeliveryPlanning()]);
     setRepairs(r); setVendorOffers(v); setDeliveryPlans(dp);
     setLoading(false);
-    syncAllFromSheets(true);
   }, []);
 
   useEffect(() => {
